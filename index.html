@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0f172a" />
-  <title>Rocky Hijab Staff Ringan</title>
+  <title>Rocky Hijab Staff Ringan - Sesuai Index</title>
   <style>
     :root{--safe:env(safe-area-inset-bottom,0px)}
     [data-theme="light"]{--bg:#eef2f7;--card:#fff;--text:#0f172a;--muted:#64748b;--line:#dbe3ef;--blue:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--soft:#f8fafc;--nav:#fff;--shadow:0 8px 22px rgba(15,23,42,.08)}
@@ -32,9 +32,9 @@ const firebaseConfig={apiKey:'AIzaSyAqmTEKnLKOXcmOoR9RrXksNe5_Fix42w8',authDomai
 const app=initializeApp(firebaseConfig), db=getFirestore(app);
 const OFFICE_LOC={lat:-6.786168,lng:106.780918};
 const RADIUS_LIMIT=200, MEMBER_URL='https://idhamkhalid24.github.io/kode-khusus-member/';
-const SESSION='rocky_staff_compact_manual_v1', PENDING_KEY='rocky_staff_pending_sync_v2', ADMIN=['admin'];
+const SESSION='rocky_firebase_session_v1', LEGACY_SESSION='rocky_staff_compact_manual_v1', PENDING_KEY='rocky_staff_pending_sync_v2', ADMIN=['admin'];
 const DEFAULT_BONUS={transactionBonusRate:.015,closingBonusPerMinute:100};
-const LIMITS={tx:260,att:180,manual:120,closings:120};
+const LIMITS={tx:400,att:400,manual:250,closings:120};
 const state={user:null,page:'home',pos:null,busy:false,lastSyncMs:0,syncing:false,syncError:'',data:{tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}}};
 const $=id=>document.getElementById(id), page=$('page');
 
@@ -89,15 +89,80 @@ function nav(){const n=$('nav'),f=$('fab');if(!state.user){n.style.display='none
 function renderLogin(){nav();page.innerHTML=`<div class="login"><div class="login-card"><div class="hero" style="text-align:center"><div class="big">ROCKY HIJAB</div><div class="sub">Koleksi Terbaik Untuk Muslimah Hebat</div></div><div class="card" style="margin-top:10px"><div class="field"><div class="label">Username Staff</div><input id="lu" autocomplete="username" placeholder="username"></div><div class="field"><div class="label">PIN</div><input id="lp" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="PIN"></div><button class="btn primary block" onclick="login()">Masuk</button></div></div></div>`}
 function render(){if(!state.user)return renderLogin();nav();if(state.page==='history')return history();return home()}
 async function getQueryDocs(makePrimary,makeFallback){try{return await getDocs(makePrimary())}catch(e){console.warn('primary query fallback',e?.code||e);return await getDocs(makeFallback())}}
-async function loadStaffData(opts={}){if(!state.user)return;const u=key(state.user.username), m=monthKey(), silent=opts.silent===true;if(!silent)showLoad(true);try{const [tx,att,manual,closeGlobal,closeUser,bs]=await Promise.all([
-  getQueryDocs(()=>query(collection(db,'transactions'),where('user','==',u),where('monthKey','==',m),limit(LIMITS.tx)),()=>query(collection(db,'transactions'),where('user','==',u),limit(LIMITS.tx))),
-  getDocs(query(collection(db,'attendance'),where('user','==',u),limit(LIMITS.att))),
-  getQueryDocs(()=>query(collection(db,'manualBonuses'),where('user','==',u),where('monthKey','==',m),limit(LIMITS.manual)),()=>query(collection(db,'manualBonuses'),where('user','==',u),limit(LIMITS.manual))),
-  getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('scope','==','global'),limit(LIMITS.closings)),()=>query(collection(db,'closings'),where('monthKey','==',m),limit(LIMITS.closings))),
-  getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('user','==',u),limit(LIMITS.closings)),()=>query(collection(db,'closings'),where('user','==',u),limit(LIMITS.closings))),
-  getDoc(doc(db,'closings','__bonus_settings'))
-]);state.data.tx=sortDesc(tx.docs.map(d=>({id:d.id,...d.data()})));state.data.att=sortDesc(att.docs.map(d=>({id:d.id,...d.data()})));state.data.manual=sortDesc(manual.docs.map(d=>({id:d.id,...d.data()})));const closeMap=new Map();[...closeGlobal.docs,...closeUser.docs].forEach(d=>{if(d.id!=='__bonus_settings')closeMap.set(d.id,{id:d.id,...d.data()})});state.data.closings=[...closeMap.values()];state.data.bonus=bs.exists()?{...DEFAULT_BONUS,...bs.data()}:{...DEFAULT_BONUS};state.lastSyncMs=Date.now();state.syncError='';applyPendingToState()}catch(e){console.error(e);state.syncError='Gagal refresh data';if(!silent)toast('Gagal load data. Cek koneksi internet.');applyPendingToState()}if(!silent)showLoad(false);render();if(!opts.skipFlush)flushPending()}
-async function flushPending(){if(!state.user||state.syncing)return;let list=getPending();if(!list.length)return;state.syncing=true;state.syncError='';const remain=[];for(const item of list){if(key(item.user)!==key(state.user.username)){remain.push(item);continue}try{if(item.type==='tx_add')await setDoc(doc(db,'transactions',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});else if(item.type==='att_add')await setDoc(doc(db,'attendance',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});else remain.push(item)}catch(e){console.warn('pending sync failed',e?.code||e);item.tries=Number(item.tries||0)+1;item.lastTryMs=Date.now();remain.push(item);if(isPermissionError(e)){state.syncError='Akses Firebase ditolak. Data belum bisa sync.';break}else state.syncError='Koneksi belum stabil, sync akan dicoba lagi.'}}setPending(remain);state.syncing=false;applyPendingToState();render()}
+async function loadStaffData(opts={}){
+  if(!state.user)return;
+  const u=key(state.user.username), silent=opts.silent===true;
+  if(!silent)showLoad(true);
+  try{
+    // Selaras dengan index: jangan bergantung ke orderBy/monthKey karena data lama/migrasi bisa belum konsisten.
+    const [tx,att,manual,bs]=await Promise.all([
+      getDocs(query(collection(db,'transactions'),where('user','==',u),limit(LIMITS.tx))),
+      getDocs(query(collection(db,'attendance'),where('user','==',u),limit(LIMITS.att))),
+      getDocs(query(collection(db,'manualBonuses'),where('user','==',u),limit(LIMITS.manual))),
+      getDoc(doc(db,'closings','__bonus_settings'))
+    ]);
+
+    let closingRows=[];
+    try{
+      const cs=await getDocs(query(collection(db,'closings'),limit(LIMITS.closings)));
+      closingRows=cs.docs.map(d=>({id:d.id,...d.data()}));
+    }catch(closeErr){
+      console.warn('closing query fallback',closeErr?.code||closeErr);
+      const m=monthKey();
+      const [globalRows,userRows]=await Promise.all([
+        getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('scope','==','global'),limit(LIMITS.closings)),()=>query(collection(db,'closings'),where('scope','==','global'),limit(LIMITS.closings))),
+        getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('user','==',u),limit(LIMITS.closings)),()=>query(collection(db,'closings'),where('user','==',u),limit(LIMITS.closings)))
+      ]);
+      const map=new Map();
+      [...globalRows.docs,...userRows.docs].forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
+      closingRows=[...map.values()];
+    }
+
+    state.data.tx=sortDesc(tx.docs.map(d=>({id:d.id,...d.data()})));
+    state.data.att=sortDesc(att.docs.map(d=>({id:d.id,...d.data()})).filter(a=>!deleted(a)));
+    state.data.manual=sortDesc(manual.docs.map(d=>({id:d.id,...d.data()})).filter(b=>!deleted(b)));
+    state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.type!=='bonus_settings'));
+    state.data.bonus=bs.exists()?{...DEFAULT_BONUS,...bs.data()}:{...DEFAULT_BONUS};
+    state.lastSyncMs=Date.now();
+    state.syncError='';
+    applyPendingToState();
+  }catch(e){
+    console.error(e);
+    state.syncError='Gagal refresh data';
+    if(!silent)toast('Gagal load data. Cek koneksi internet.');
+    applyPendingToState();
+  }
+  if(!silent)showLoad(false);
+  render();
+  if(!opts.skipFlush)flushPending();
+}
+async function flushPending(){
+  if(!state.user||state.syncing)return;
+  let list=getPending();
+  if(!list.length)return;
+  state.syncing=true;
+  state.syncError='';
+  const remain=[];
+  for(const item of list){
+    if(key(item.user)!==key(state.user.username)){remain.push(item);continue}
+    try{
+      if(item.type==='tx_add')await setDoc(doc(db,'transactions',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+      else if(item.type==='att_add')await setDoc(doc(db,'attendance',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+      else remain.push(item);
+    }catch(e){
+      console.warn('pending sync failed',e?.code||e);
+      item.tries=Number(item.tries||0)+1;
+      item.lastTryMs=Date.now();
+      remain.push(item);
+      if(isPermissionError(e)){state.syncError='Akses Firebase ditolak. Data belum bisa sync.';break}
+      else state.syncError='Koneksi belum stabil, sync akan dicoba lagi.';
+    }
+  }
+  setPending(remain);
+  state.syncing=false;
+  applyPendingToState();
+  render();
+}
 async function retrySync(){await flushPending();if(!pendingForUser().length){toast('Semua data sudah sync');await loadStaffData({silent:true,skipFlush:true})}else toast('Masih ada data menunggu sync')}
 function liveTx(){return state.data.tx.filter(t=>!deleted(t))}
 function todayTx(){const d=todayKey();return liveTx().filter(t=>txDate(t)===d)}
@@ -109,18 +174,46 @@ function monthAttendDays(){const m=monthKey(), set=new Set();state.data.att.forE
 function monthlyAttendancePerformance(){const m=monthKey();const rows=state.data.att.filter(a=>!deleted(a)&&attDate(a).startsWith(m));if(!rows.length)return null;let total=0,count=0;for(const rec of rows){const n=ms(rec);if(!n)continue;const p=parts(new Date(n));total+=Number(p.hour||0)*60+Number(p.minute||0);count++}if(!count)return null;const avg=total/count,h=Math.floor(avg/60),mi=Math.floor(avg%60),label=String(h).padStart(2,'0')+':'+String(mi).padStart(2,'0');return{avgLabel:label,isGood:avg<=440,count}}
 function averageAttendanceCard(){if(isDaily())return '';const p=monthlyAttendancePerformance();if(!p)return `<div class="card avg-att-card" style="margin-top:8px"><div class="between"><div><div class="label">Rata-rata Jam Absen</div><div class="hint" style="margin-top:4px">${monthID(monthKey())} · belum ada data</div></div><div class="stat-val" style="color:var(--muted)">--:--</div></div></div>`;const cls=p.isGood?'avg-good':'avg-warn',pill=p.isGood?'green':'amber',txt=p.isGood?'Performa baik':'Perlu ditingkatkan';return `<div class="card avg-att-card ${cls}" style="margin-top:8px"><div class="between"><div><div class="label">Rata-rata Jam Absen</div><div class="hint" style="margin-top:4px">${monthID(monthKey())} · ${p.count} hari hadir</div></div><div style="text-align:right"><div class="stat-val">${p.avgLabel}</div><span class="pill ${pill}">${txt}</span></div></div></div>`}
 function hasAttendOn(dateKey){return state.data.att.some(a=>!deleted(a)&&attDate(a)===String(dateKey||'').slice(0,10))}
-function rate(){const u=state.user||{};const r=Number(u.dailyBonusRate);if(Number.isFinite(r)&&r>0)return r;const p=Number(u.dailyBonusPercent);if(Number.isFinite(p)&&p>0)return p/100;return Number(state.data.bonus.transactionBonusRate||DEFAULT_BONUS.transactionBonusRate)}
-function manualBonus(){if(isDaily())return 0;const m=monthKey();return state.data.manual.filter(b=>!deleted(b)&&String(b.monthKey||txDate(b).slice(0,7))===m).reduce((s,b)=>s+Number(b.amount||0),0)}
+function rate(){const u=state.user||{};if(isDaily()){const r=Number(u.dailyBonusRate);if(Number.isFinite(r)&&r>=0)return r;const p=Number(u.dailyBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100}const globalRate=Number(state.data.bonus.transactionBonusRate);return Number.isFinite(globalRate)&&globalRate>=0?globalRate:DEFAULT_BONUS.transactionBonusRate}
+function manualBonus(){if(isDaily())return 0;const m=monthKey();return state.data.manual.filter(b=>!deleted(b)&&String(b.monthKey||txDate(b).slice(0,7))===m).reduce((sum,b)=>sum+Number(b.amount||0),0)}
 function activeClosings(){const m=monthKey();return state.data.closings.filter(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.monthKey||c.dateKey||'').startsWith(m))}
-function closingBonusValue(c){const u=key(state.user?.username);const map=c.bonusByUser||{};if(map[u]!=null)return Number(map[u]||0);if(c.scope==='user'||c.user)return key(c.user)===u?Number(c.bonusPerUser||c.totalBonus||0):0;const per=Number(c.bonusPerUser||0)||(Number(c.staffCount||0)?Number(c.totalBonus||0)/Number(c.staffCount||1):0);return per}
-function closingBonus(){if(isDaily())return 0;return activeClosings().reduce((sum,c)=>{const d=String(c.dateKey||'').slice(0,10);if(!d||!hasAttendOn(d))return sum;return sum+closingBonusValue(c)},0)}
-function closingCount(){if(isDaily())return 0;return activeClosings().filter(c=>{const d=String(c.dateKey||'').slice(0,10);return d&&hasAttendOn(d)&&closingBonusValue(c)>0}).length}
+function closingScope(c){return String(c?.scope||(c?.user?'user':'global')).toLowerCase()}
+function closingBonusValue(c){
+  if(!c||c.closed!==true)return 0;
+  const u=key(state.user?.username), map=c.bonusByUser||{}, scope=closingScope(c);
+  if(scope==='user'||c.user){
+    if(Object.keys(map).length)return Number(map[u]||0);
+    return key(c.user)===u?Number(c.bonusPerUser||c.totalBonus||0):0;
+  }
+  // Penting: untuk closing GLOBAL, user hanya dapat bonus kalau index menulis bonusByUser[username].
+  // Jangan fallback ke bonusPerUser/totalBonus, karena user yang sudah closing per-user bisa terbaca dobel.
+  return Number(map[u]||0);
+}
+function closingBonusRows(){
+  if(isDaily())return [];
+  const byDate=new Map();
+  activeClosings().forEach(c=>{
+    const d=String(c.dateKey||'').slice(0,10);
+    if(!d)return;
+    const val=Math.round(closingBonusValue(c));
+    if(!val)return;
+    const scope=closingScope(c), prev=byDate.get(d);
+    // Satu user hanya boleh punya 1 bonus closing per tanggal. Jika ada closing per-user dan global, prioritaskan per-user.
+    if(!prev||scope==='user'||c.user)byDate.set(d,{record:c,val});
+  });
+  return [...byDate.values()];
+}
+function closingBonus(){return closingBonusRows().reduce((sum,x)=>sum+Number(x.val||0),0)}
+function closingCount(){return closingBonusRows().length}
 function trxBonus(){return Math.round(monthTotal()*rate())}
 function totalBonus(){return trxBonus()+closingBonus()+manualBonus()}
 function todayClosing(){
   const d=todayKey(), u=key(state.user?.username);
-  const rows=state.data.closings.filter(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.dateKey||'')===d&&((!c.user&&c.scope!=='user')||c.scope==='global'||key(c.user)===u));
-  return sortDesc(rows)[0]||null;
+  const rows=state.data.closings.filter(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.dateKey||'')===d);
+  const userRows=rows.filter(c=>(closingScope(c)==='user'||c.user)&&key(c.user)===u);
+  if(userRows.length)return sortDesc(userRows)[0];
+  const globalRows=rows.filter(c=>closingScope(c)==='global'||(!c.user&&c.scope!=='user'));
+  return sortDesc(globalRows)[0]||null;
 }
 function closingTimeText(c){
   if(!c)return '--:--';
@@ -132,8 +225,8 @@ function closingTimeText(c){
 function isClosedToday(){const d=todayKey(), u=key(state.user?.username);return state.data.closings.some(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.dateKey||'')===d&&((!c.user&&c.scope!=='user')||c.scope==='global'||key(c.user)===u))}
 function delayMin(tm=timeNow()){const m=String(tm).match(/^(\d{1,2}):(\d{2})$/);if(!m)return 0;return Math.max(0,Number(m[1])*60+Number(m[2])-1080)}
 function closingNotice(){if(isDaily()||!todayAtt())return '';const d=delayMin();if(!d||isClosedToday())return '';const rate=Number(state.data.bonus.closingBonusPerMinute||0);const est=d*rate;return `<div class="card warn" style="margin-bottom:8px"><b>Estimasi bonus closing</b><div class="hint" style="margin-top:4px;color:inherit">Estimasi bonus kamu Rp ${rp(est)}</div></div>`}
-function todayClosingBonusNotice(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const d=todayKey();if(!hasAttendOn(d))return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="card closing-bonus-card"><div class="between"><div><div class="label">Bonus Closing Hari Ini</div><div class="stat-val" style="font-size:20px;color:var(--green)">Rp ${rp(val)}</div><div class="hint" style="margin-top:3px">Berlaku hanya tanggal ${dateID(d)}</div></div><span class="pill green">Dapat</span></div></div>`}
-function todayClosingBonusInline(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const d=todayKey();if(!hasAttendOn(d))return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="bonus-note" style="margin-top:4px;color:var(--green);font-weight:850">Bonus closing hari ini Rp ${rp(val)}</div>`}
+function todayClosingBonusNotice(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="card closing-bonus-card"><div class="between"><div><div class="label">Bonus Closing Hari Ini</div><div class="stat-val" style="font-size:20px;color:var(--green)">Rp ${rp(val)}</div><div class="hint" style="margin-top:3px">Bonus dari closing index hari ini</div></div><span class="pill green">Dapat</span></div></div>`}
+function todayClosingBonusInline(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="bonus-note" style="margin-top:4px;color:var(--green);font-weight:850">Bonus closing hari ini Rp ${rp(val)}</div>`}
 function canTx(){if(isClosedToday())return false;if(isDaily())return true;return !!todayAtt()}
 function statusPill(){if(isClosedToday())return `<span class="pill amber">Sudah closing</span>`;if(isDaily())return `<span class="pill blue">Karyawan harian</span>`;const a=todayAtt();return a?`<span class="pill green">Sudah absen · ${timeID(ms(a))}</span>`:`<span class="pill red">Belum absen</span>`}
 function locText(){if(!state.pos)return `<button class="pill blue" onclick="updateLocation()">Ambil GPS</button>`;const dist=distance(state.pos.lat,state.pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);return dist<=RADIUS_LIMIT?`<span class="pill green">Radius · ${Math.round(dist)}m</span>`:`<span class="pill red">Diluar · ${Math.round(dist)}m</span>`}
@@ -148,16 +241,163 @@ function home(){const tx=todayTx(), a=todayAtt(), c=todayClosing();
 function history(){const items=sortDesc(todayTx());page.innerHTML=`${top('Riwayat Hari Ini',`${items.length} transaksi · Rp ${rp(todayTotal())}`)}${syncBar()}<div class="list">${items.length?items.map(txItem).join(''):'<div class="empty">Belum ada transaksi hari ini.</div>'}</div>`}
 async function pinAsk(msg='Masukkan PIN'){return new Promise(res=>{window.__pin=v=>{closeModal();delete window.__pin;res(String(v||''))};modal('Verifikasi PIN',`<div class="hint" style="margin-bottom:8px">${esc(msg)}</div><input id="pinx" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="PIN" style="text-align:center;font-size:22px;font-weight:950">`,`<button class="btn" onclick="__pin('')">Batal</button><button class="btn primary" onclick="__pin(document.getElementById('pinx').value)">Lanjut</button>`);setTimeout(()=>$('pinx')?.focus(),60)})}
 function openTx(){if(!state.user)return;if(!canTx())return toast(isClosedToday()?'Transaksi sudah closing hari ini':'Absen dulu sebelum transaksi');primeSuccessSound();modal('Tambah Transaksi',`<div class="field"><div class="label">Catatan</div><input id="txn" placeholder="Tulis manual..." autocomplete="off"></div><div class="field"><div class="label">Nominal Rupiah</div><input id="txa" type="tel" inputmode="numeric" pattern="[0-9]*" placeholder="Rp 0" oninput="formatRupiahInput(this)" style="text-align:right;font-size:24px;font-weight:950"></div><div class="hint">Jika internet putus, transaksi disimpan lokal dan otomatis sync saat online.</div>`,`<button class="btn" onclick="closeModal()">Batal</button><button class="btn primary" onclick="saveTx()">Simpan</button>`)}
-async function saveTx(){primeSuccessSound();const amount=Number(onlyDigits($('txa')?.value)), note=String($('txn')?.value||'').trim()||'Transaksi';if(!amount)return toast('Nominal wajib diisi');if(!canTx()){closeModal();return toast('Absen dulu sebelum transaksi')}const now=Date.now(), u=key(state.user.username), id='stafftx_'+u+'_'+now+'_'+Math.random().toString(36).slice(2,7);const payload={user:u,name:state.user.name||u,amount,note,dateKey:todayKey(),monthKey:monthKey(),deleted:false,createdAtMs:now,createdBy:u,clientId:id,source:'staff_ringan_no_rules_change'};const local={id,...payload,pending:true};closeModal();state.data.tx=[local,...state.data.tx];render();try{await setDoc(doc(db,'transactions',id),{...payload,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:false});state.data.tx=state.data.tx.map(t=>t.id===id?{...t,pending:false}:t);removePending(id);playSuccessSound();toast('Transaksi tersimpan');render()}catch(e){console.error(e);if(isPermissionError(e)){state.data.tx=state.data.tx.filter(t=>t.id!==id);state.syncError='Akses Firebase menolak transaksi.';toast('Akses Firebase menolak transaksi')}else{addPending({type:'tx_add',id,user:u,payload,createdAtMs:now});toast('Koneksi gagal. Disimpan lokal & akan sync otomatis.')}render()}}
-async function delTx(id){const t=state.data.tx.find(x=>String(x.id)===String(id));if(!t)return toast('Transaksi tidak ditemukan');if(key(t.user)!==key(state.user.username))return toast('Tidak bisa hapus transaksi orang lain');const p=await pinAsk(`Hapus transaksi Rp ${rp(t.amount)}?`);if(!p)return;if(String(p)!==String(state.user.pin))return toast('PIN salah');showLoad(true);try{await setDoc(doc(db,'transactions',id),{deleted:true,deletedAt:serverTimestamp(),deletedAtMs:Date.now(),deletedBy:state.user.username,deletedByName:state.user.name},{merge:true});state.data.tx=state.data.tx.map(x=>String(x.id)===String(id)?{...x,deleted:true,deletedAtMs:Date.now()}:x);toast('Transaksi dihapus');await logAudit('staff_transaction_delete',{id,amount:Number(t.amount||0),note:t.note||''})}catch(e){console.error(e);toast(isPermissionError(e)?'Akses Firebase menolak hapus':'Gagal hapus transaksi')}showLoad(false);render()}
+async function saveTx(){
+  primeSuccessSound();
+  const amount=Number(onlyDigits($('txa')?.value)), note=String($('txn')?.value||'').trim()||'Transaksi';
+  if(!amount||amount<=0)return toast('Nominal wajib diisi');
+  if(!canTx()){
+    closeModal();
+    return toast(isClosedToday()?'Transaksi sudah closing. Terbuka otomatis besok.':'Absen dulu sebelum transaksi');
+  }
+  const now=Date.now(), u=key(state.user.username), id='stafftx_'+u+'_'+now+'_'+Math.random().toString(36).slice(2,7);
+  const payload={
+    user:u,
+    name:state.user.name||u,
+    amount,
+    note,
+    dateKey:todayKey(),
+    monthKey:monthKey(),
+    createdAtMs:now,
+    deleted:false,
+    createdBy:u,
+    clientId:id,
+    source:'trx_staff_sesuai_index'
+  };
+  const local={id,...payload,pending:true};
+  closeModal();
+  state.data.tx=[local,...state.data.tx];
+  render();
+  try{
+    await setDoc(doc(db,'transactions',id),{...payload,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:false});
+    state.data.tx=state.data.tx.map(t=>t.id===id?{...t,pending:false}:t);
+    removePending(id);
+    playSuccessSound();
+    toast('Transaksi tersimpan');
+    await logAudit('transaction_create',{id,user:u,amount,note});
+    render();
+  }catch(e){
+    console.error(e);
+    if(isPermissionError(e)){
+      state.data.tx=state.data.tx.filter(t=>t.id!==id);
+      state.syncError='Akses Firebase menolak transaksi.';
+      toast('Akses Firebase menolak transaksi');
+    }else{
+      addPending({type:'tx_add',id,user:u,payload,createdAtMs:now});
+      toast('Koneksi gagal. Disimpan lokal & akan sync otomatis.');
+    }
+    render();
+  }
+}
+async function delTx(id){
+  const t=state.data.tx.find(x=>String(x.id)===String(id));
+  if(!t)return toast('Transaksi tidak ditemukan');
+  if(key(t.user)!==key(state.user.username))return toast('Tidak bisa hapus transaksi orang lain');
+  const p=await pinAsk(`Hapus transaksi Rp ${rp(t.amount)}?`);
+  if(!p)return;
+  if(String(p)!==String(state.user.pin))return toast('PIN salah');
+  showLoad(true);
+  try{
+    await setDoc(doc(db,'transactions',id),{deleted:true,deletedAt:serverTimestamp(),deletedAtMs:Date.now(),deletedBy:state.user.username,deletedByName:state.user.name},{merge:true});
+    state.data.tx=state.data.tx.map(x=>String(x.id)===String(id)?{...x,deleted:true,deletedAtMs:Date.now(),deletedBy:state.user.username,deletedByName:state.user.name}:x);
+    await logAudit('transaction_soft_delete',{id,user:t.user,amount:Number(t.amount||0),note:t.note||'Transaksi'});
+    toast('Transaksi dihapus aman');
+  }catch(e){
+    console.error(e);
+    toast(isPermissionError(e)?'Akses Firebase menolak hapus':'Gagal hapus transaksi');
+  }
+  showLoad(false);
+  render();
+}
 function getPosition(){return new Promise((res,rej)=>{if(!navigator.geolocation)return rej(new Error('GPS tidak tersedia'));navigator.geolocation.getCurrentPosition(p=>res({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy||0}),e=>rej(e),{enableHighAccuracy:true,timeout:12000,maximumAge:0})})}
 function distance(a,b,c,d){const R=6371000,rad=x=>x*Math.PI/180,da=rad(c-a),db=rad(d-b),x=Math.sin(da/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(db/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
 async function updateLocation(){try{state.pos=await getPosition();render()}catch(e){toast('GPS gagal / izin lokasi ditolak')}}
-async function clockIn(){if(todayAtt())return toast('Sudah absen hari ini');let pos=state.pos;try{if(!pos)pos=await getPosition();state.pos=pos}catch(e){return toast('GPS gagal / izin lokasi ditolak')}const dist=distance(pos.lat,pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);if(dist>RADIUS_LIMIT)return toast(`Diluar radius (${Math.round(dist)}m)`);showLoad(true);const now=Date.now(),u=key(state.user.username),id='staffatt_'+u+'_'+todayKey()+'_'+now;const payload={user:u,name:state.user.name||u,dateKey:todayKey(),lat:pos.lat,lng:pos.lng,loc:pos,createdAtMs:now,deleted:false,clientId:id,source:'staff_ringan_no_rules_change'};try{const local={id,...payload,pending:true};state.data.att=[local,...state.data.att];render();await setDoc(doc(db,'attendance',id),{...payload,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:false});state.data.att=state.data.att.map(a=>a.id===id?{...a,pending:false}:a);removePending(id);toast('Absen berhasil')}catch(e){console.error(e);if(isPermissionError(e)){state.data.att=state.data.att.filter(a=>a.id!==id);state.syncError='Akses Firebase menolak absen.';toast('Akses Firebase menolak absen')}else{addPending({type:'att_add',id,user:u,payload,createdAtMs:now});toast('Koneksi gagal. Absen disimpan lokal & akan sync otomatis.')}}showLoad(false);render()}
+async function clockIn(){
+  if(todayAtt())return toast('Sudah absen hari ini');
+  let pos=state.pos;
+  try{if(!pos)pos=await getPosition();state.pos=pos}catch(e){return toast('GPS gagal / izin lokasi ditolak')}
+  const dist=distance(pos.lat,pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);
+  if(dist>RADIUS_LIMIT)return toast(`Diluar radius (${Math.round(dist)}m)`);
+  showLoad(true);
+  const now=Date.now(),u=key(state.user.username),id='staffatt_'+u+'_'+todayKey()+'_'+now;
+  const payload={user:u,name:state.user.name||u,dateKey:todayKey(),createdAtMs:now,loc:pos,lat:pos.lat,lng:pos.lng,deleted:false,clientId:id,source:'trx_staff_sesuai_index'};
+  try{
+    const local={id,...payload,pending:true};
+    state.data.att=[local,...state.data.att];
+    render();
+    await setDoc(doc(db,'attendance',id),{...payload,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:false});
+    state.data.att=state.data.att.map(a=>a.id===id?{...a,pending:false}:a);
+    removePending(id);
+    toast('Absen berhasil');
+  }catch(e){
+    console.error(e);
+    if(isPermissionError(e)){
+      state.data.att=state.data.att.filter(a=>a.id!==id);
+      state.syncError='Akses Firebase menolak absen.';
+      toast('Akses Firebase menolak absen');
+    }else{
+      addPending({type:'att_add',id,user:u,payload,createdAtMs:now});
+      toast('Koneksi gagal. Absen disimpan lokal & akan sync otomatis.');
+    }
+  }
+  showLoad(false);
+  render();
+}
 async function logAudit(action,detail={}){try{await addDoc(collection(db,'audit_logs'),{action,detail,user:state.user?.username||'',name:state.user?.name||'',createdAt:serverTimestamp(),createdAtMs:Date.now()})}catch(e){console.warn('audit skipped',e?.code||e)}}
-async function login(){const u=key($('lu')?.value), p=String($('lp')?.value||'').trim();if(!u||!p)return toast('Isi username dan PIN');showLoad(true);try{const snap=await getDoc(doc(db,'users',u));if(!snap.exists())throw new Error('User tidak ditemukan');const data={id:snap.id,username:snap.data().username||snap.id,...snap.data()};if(isAdmin(data))throw new Error('Aplikasi ini khusus staff');if(data.active===false||deleted(data))throw new Error('User nonaktif');if(String(data.pin||'')!==p)throw new Error('PIN salah');state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0)};localStorage.setItem(SESSION,JSON.stringify({username:state.user.username,pin:p}));showLoad(false);await loadStaffData();toast(`Masuk: ${state.user.name}`)}catch(e){console.error(e);showLoad(false);toast(e.message||'Login gagal');renderLogin()}}
-async function boot(){setTheme(getTheme());try{const s=JSON.parse(localStorage.getItem(SESSION)||'null');if(s?.username&&s?.pin){const snap=await getDoc(doc(db,'users',key(s.username)));if(snap.exists()){const data={id:snap.id,username:snap.data().username||snap.id,...snap.data()};if(!isAdmin(data)&&data.active!==false&&!deleted(data)&&String(data.pin||'')===String(s.pin)){state.user={username:key(data.username||s.username),name:data.name||s.username,pin:String(data.pin||''),role:data.role||'staff',dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0)};await loadStaffData();return}}}}catch(e){console.warn(e)}renderLogin()}
-function logout(){localStorage.removeItem(SESSION);state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}};renderLogin()}
+async function login(){
+  const u=key($('lu')?.value), p=String($('lp')?.value||'').trim();
+  if(!u||!p)return toast('Isi username dan PIN');
+  showLoad(true);
+  try{
+    const snap=await getDoc(doc(db,'users',u));
+    if(!snap.exists())throw new Error('User tidak ditemukan');
+    const raw=snap.data()||{};
+    const data={id:snap.id,username:raw.username||snap.id,...raw};
+    if(isAdmin(data))throw new Error('Aplikasi ini khusus staff');
+    if(data.active===false||deleted(data))throw new Error('User nonaktif');
+    if(String(data.pin||'')!==p)throw new Error('PIN salah');
+    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
+    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+    localStorage.setItem(SESSION,JSON.stringify(saved));
+    localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
+    showLoad(false);
+    await loadStaffData();
+    toast(`Masuk: ${state.user.name}`);
+  }catch(e){
+    console.error(e);
+    showLoad(false);
+    toast(e.message||'Login gagal');
+    renderLogin();
+  }
+}
+async function boot(){
+  setTheme(getTheme());
+  const raw=[];
+  try{raw.push(JSON.parse(localStorage.getItem(SESSION)||'null'))}catch(e){}
+  try{raw.push(JSON.parse(localStorage.getItem(LEGACY_SESSION)||'null'))}catch(e){}
+  for(const s of raw.filter(Boolean)){
+    try{
+      const username=key(s.username||s.user||s.id);
+      const pin=String(s.pin||'');
+      if(!username||!pin)continue;
+      const snap=await getDoc(doc(db,'users',username));
+      if(!snap.exists())continue;
+      const rawData=snap.data()||{};
+      const data={id:snap.id,username:rawData.username||snap.id,...rawData};
+      if(!isAdmin(data)&&data.active!==false&&!deleted(data)&&String(data.pin||'')===pin){
+        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
+        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+        localStorage.setItem(SESSION,JSON.stringify(saved));
+        localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
+        await loadStaffData();
+        return;
+      }
+    }catch(e){console.warn(e)}
+  }
+  localStorage.removeItem(SESSION);
+  localStorage.removeItem(LEGACY_SESSION);
+  renderLogin();
+}
+function logout(){localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION);state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}};renderLogin()}
 function go(p){state.page=p;render()}
 async function refresh(){await flushPending();await loadStaffData({skipFlush:true});toast('Data diperbarui')}
 function setupAutoSync(){setInterval(()=>{if(state.user&&!document.hidden&&Date.now()-state.lastSyncMs>60000)loadStaffData({silent:true})},70000);window.addEventListener('online',()=>{if(state.user){toast('Online lagi, sync dicek');flushPending();loadStaffData({silent:true})}});window.addEventListener('focus',()=>{if(state.user&&Date.now()-state.lastSyncMs>30000)loadStaffData({silent:true})});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.user&&Date.now()-state.lastSyncMs>30000)loadStaffData({silent:true})})}

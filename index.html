@@ -32,7 +32,7 @@
 </div>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, query, where, limit, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+import { getFirestore, collection, doc, getDoc, getDocs, getDocFromServer, getDocsFromServer, setDoc, addDoc, query, where, limit, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
 const firebaseConfig={apiKey:'AIzaSyAqmTEKnLKOXcmOoR9RrXksNe5_Fix42w8',authDomain:'rocky-fd14b.firebaseapp.com',projectId:'rocky-fd14b',storageBucket:'rocky-fd14b.firebasestorage.app',messagingSenderId:'861954349314',appId:'1:861954349314:web:bb8384825daedb8d34ca1b'};
 const app=initializeApp(firebaseConfig), db=getFirestore(app);
@@ -76,6 +76,7 @@ function userTransactionBonusRate(user=state.user){
 function userTransactionBonusPercent(user=state.user){return Number((userTransactionBonusRate(user)*100).toFixed(3))}
 function userClosingBonusPerMinute(user=state.user){
   const u=user||{};
+  if(isDailyUser(u))return 0;
   if(hasBonusValue(u.closingBonusPerMinute)){const n=Number(u.closingBonusPerMinute);if(Number.isFinite(n)&&n>=0)return n}
   return globalClosingBonusPerMinute();
 }
@@ -136,8 +137,8 @@ async function loadStaffData(opts={}){
       getDocs(query(collection(db,'transactions'),where('user','==',u),limit(LIMITS.tx))),
       getDocs(query(collection(db,'attendance'),where('user','==',u),limit(LIMITS.att))),
       getDocs(query(collection(db,'manualBonuses'),where('user','==',u),limit(LIMITS.manual))),
-      getDoc(doc(db,'closings','__bonus_settings')),
-      getDoc(doc(db,'users',u))
+      getDocFromServer(doc(db,'closings','__bonus_settings')),
+      getDocFromServer(doc(db,'users',u))
     ]);
 
     let closingRows=[];
@@ -173,12 +174,12 @@ async function loadStaffData(opts={}){
         role:fresh.role||'staff',
         transactionBonusRate:hasBonusValue(fresh.transactionBonusRate)?Number(fresh.transactionBonusRate):null,
         transactionBonusPercent:hasBonusValue(fresh.transactionBonusPercent)?Number(fresh.transactionBonusPercent):null,
-        closingBonusPerMinute:hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null,
+        closingBonusPerMinute:isDailyUser(fresh)?0:(hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null),
         dailyBonusRate:Number(fresh.dailyBonusRate||0),
         dailyBonusPercent:Number(fresh.dailyBonusPercent||0),
         active:fresh.active!==false
       };
-      const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+      const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
       localStorage.setItem(SESSION,JSON.stringify(saved));
       localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
     }
@@ -311,9 +312,9 @@ async function verifyTransactionAllowedServer(dateKeyForTx=todayKey()){
   if(!u)return {ok:false,msg:'Sesi login tidak valid. Login ulang.'};
   try{
     const reads=[
-      getDocs(query(collection(db,'closings'),where('dateKey','==',d),limit(80)))
+      getDocsFromServer(query(collection(db,'closings'),where('dateKey','==',d),limit(80)))
     ];
-    if(!isDaily())reads.push(getDocs(query(collection(db,'attendance'),where('dateKey','==',d),limit(80))));
+    if(!isDaily())reads.push(getDocsFromServer(query(collection(db,'attendance'),where('dateKey','==',d),limit(80))));
     const snaps=await Promise.all(reads);
     const closingRows=snaps[0].docs.map(x=>({id:x.id,...x.data()}));
     upsertRows('closings',closingRows);
@@ -342,8 +343,8 @@ async function latestBonusSnapshotForSave(){
   if(!u)return {ok:false,msg:'Sesi login tidak valid. Login ulang.'};
   try{
     const [userSnap,bonusSnap]=await Promise.all([
-      getDoc(doc(db,'users',u)),
-      getDoc(doc(db,'closings','__bonus_settings'))
+      getDocFromServer(doc(db,'users',u)),
+      getDocFromServer(doc(db,'closings','__bonus_settings'))
     ]);
     if(!userSnap.exists())return {ok:false,msg:'User tidak ditemukan. Login ulang.'};
     const raw=userSnap.data()||{};
@@ -356,7 +357,7 @@ async function latestBonusSnapshotForSave(){
       role:fresh.role||'staff',
       transactionBonusRate:hasBonusValue(fresh.transactionBonusRate)?Number(fresh.transactionBonusRate):null,
       transactionBonusPercent:hasBonusValue(fresh.transactionBonusPercent)?Number(fresh.transactionBonusPercent):null,
-      closingBonusPerMinute:hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null,
+      closingBonusPerMinute:isDailyUser(fresh)?0:(hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null),
       dailyBonusRate:Number(fresh.dailyBonusRate||0),
       dailyBonusPercent:Number(fresh.dailyBonusPercent||0),
       active:fresh.active!==false
@@ -521,15 +522,15 @@ async function login(){
   if(!u||!p)return toast('Isi username dan PIN');
   showLoad(true);
   try{
-    const snap=await getDoc(doc(db,'users',u));
+    const snap=await getDocFromServer(doc(db,'users',u));
     if(!snap.exists())throw new Error('User tidak ditemukan');
     const raw=snap.data()||{};
     const data={id:snap.id,username:raw.username||snap.id,...raw};
     if(isAdmin(data))throw new Error('Aplikasi ini khusus staff');
     if(data.active===false||deleted(data))throw new Error('User nonaktif');
     if(String(data.pin||'')!==p)throw new Error('PIN salah');
-    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null,dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
-    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
+    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
     localStorage.setItem(SESSION,JSON.stringify(saved));
     localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
     showLoad(false);
@@ -557,8 +558,8 @@ async function boot(){
       const rawData=snap.data()||{};
       const data={id:snap.id,username:rawData.username||snap.id,...rawData};
       if(!isAdmin(data)&&data.active!==false&&!deleted(data)&&String(data.pin||'')===pin){
-        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null,dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
-        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
+        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
         localStorage.setItem(SESSION,JSON.stringify(saved));
         localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
         await loadStaffData();

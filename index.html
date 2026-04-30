@@ -146,7 +146,17 @@ async function flushPending(){
   for(const item of list){
     if(key(item.user)!==key(state.user.username)){remain.push(item);continue}
     try{
-      if(item.type==='tx_add')await setDoc(doc(db,'transactions',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+      if(item.type==='tx_add'){
+        const allowed=await verifyTransactionAllowedServer(item.payload?.dateKey||todayKey());
+        if(!allowed.ok){
+          item.tries=Number(item.tries||0)+1;
+          item.lastTryMs=Date.now();
+          remain.push(item);
+          state.syncError=allowed.msg||'Pending transaksi belum bisa diverifikasi.';
+          continue;
+        }
+        await setDoc(doc(db,'transactions',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+      }
       else if(item.type==='att_add')await setDoc(doc(db,'attendance',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
       else remain.push(item);
     }catch(e){
@@ -228,6 +238,47 @@ function closingNotice(){if(isDaily()||!todayAtt())return '';const d=delayMin();
 function todayClosingBonusNotice(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="card closing-bonus-card"><div class="between"><div><div class="label">Bonus Closing Hari Ini</div><div class="stat-val" style="font-size:20px;color:var(--green)">Rp ${rp(val)}</div><div class="hint" style="margin-top:3px">Bonus dari closing index hari ini</div></div><span class="pill green">Dapat</span></div></div>`}
 function todayClosingBonusInline(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="bonus-note" style="margin-top:4px;color:var(--green);font-weight:850">Bonus closing hari ini Rp ${rp(val)}</div>`}
 function canTx(){if(isClosedToday())return false;if(isDaily())return true;return !!todayAtt()}
+function upsertRows(listName,rows){
+  if(!Array.isArray(rows)||!rows.length)return;
+  const map=new Map((state.data[listName]||[]).map(x=>[String(x.id||''),x]));
+  rows.forEach(r=>{if(r&&r.id)map.set(String(r.id),r)});
+  state.data[listName]=sortDesc([...map.values()]);
+}
+function serverClosingHit(c,u,d){
+  return c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.dateKey||'')===d&&((!c.user&&c.scope!=='user')||c.scope==='global'||key(c.user)===u);
+}
+async function verifyTransactionAllowedServer(dateKeyForTx=todayKey()){
+  const u=key(state.user?.username), d=String(dateKeyForTx||todayKey()).slice(0,10);
+  if(!u)return {ok:false,msg:'Sesi login tidak valid. Login ulang.'};
+  try{
+    const reads=[
+      getDocs(query(collection(db,'closings'),where('dateKey','==',d),limit(80)))
+    ];
+    if(!isDaily())reads.push(getDocs(query(collection(db,'attendance'),where('dateKey','==',d),limit(80))));
+    const snaps=await Promise.all(reads);
+    const closingRows=snaps[0].docs.map(x=>({id:x.id,...x.data()}));
+    upsertRows('closings',closingRows);
+    if(closingRows.some(c=>serverClosingHit(c,u,d))){
+      render();
+      return {ok:false,msg:'Transaksi sudah closing hari ini.'};
+    }
+    if(!isDaily()){
+      const attRows=snaps[1].docs.map(x=>({id:x.id,...x.data()}));
+      upsertRows('att',attRows);
+      const hasAtt=attRows.some(a=>!deleted(a)&&key(a.user)===u&&attDate(a)===d);
+      if(!hasAtt){
+        state.data.att=(state.data.att||[]).filter(a=>!(key(a.user)===u&&attDate(a)===d));
+        render();
+        return {ok:false,msg:'Absen hari ini belum ada / sudah dihapus admin.'};
+      }
+    }
+    return {ok:true};
+  }catch(e){
+    console.error('cek ulang absen/closing gagal',e);
+    return {ok:false,msg:isPermissionError(e)?'Akses cek absen/closing ditolak Firebase.':'Gagal cek ulang absen/closing. Pastikan internet aktif.'};
+  }
+}
+
 function statusPill(){if(isClosedToday())return `<span class="pill amber">Sudah closing</span>`;if(isDaily())return `<span class="pill blue">Karyawan harian</span>`;const a=todayAtt();return a?`<span class="pill green">Sudah absen · ${timeID(ms(a))}</span>`:`<span class="pill red">Belum absen</span>`}
 function locText(){if(!state.pos)return `<button class="pill blue" onclick="updateLocation()">Ambil GPS</button>`;const dist=distance(state.pos.lat,state.pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);return dist<=RADIUS_LIMIT?`<span class="pill green">Radius · ${Math.round(dist)}m</span>`:`<span class="pill red">Diluar · ${Math.round(dist)}m</span>`}
 function txItem(t){const pending=t.pending===true;const tag=pending?'<span class="pending-tag">MENUNGGU SYNC</span>':'';return `<div class="item"><div class="main"><div class="item-title">${esc(t.note||'Transaksi')}</div><div class="item-sub">${dateID(txDate(t))} · ${timeID(ms(t))}</div>${tag}</div><div><div class="amount">Rp ${rp(t.amount)}</div>${txDate(t)===todayKey()&&!pending?`<button class="btn sm danger" style="margin-top:5px" onclick="delTx('${esc(t.id)}')">Hapus</button>`:''}</div></div>`}
@@ -240,7 +291,7 @@ function home(){const tx=todayTx(), a=todayAtt(), c=todayClosing();
   const mainLabel=c?'Closing Hari Ini':'Absen Hari Ini';const mainValue=c?closingTimeText(c):(a?timeID(ms(a)):'--:--');const mainFoot=c?'admin sudah closing':(a?'jam absen hari ini':'belum absen');page.innerHTML=`${top('Mode Staff',state.user?.name||'Karyawan Staff')}${syncBar()}${averageAttendanceCard()}${closingNotice()}<div class="hero"><div class="kicker">Pendapatan Hari Ini</div><div class="big">Rp ${rp(todayTotal())}</div><div class="sub">${dateID(todayKey())} · ${tx.length} transaksi</div></div><div class="grid2" style="margin-top:8px"><div class="stat"><div class="stat-label">${mainLabel}</div><div class="stat-val">${mainValue}</div><div class="stat-foot">${mainFoot}</div></div><div class="stat"><div class="stat-label">Hadir Bulan</div><div class="stat-val">${monthAttendDays()}x</div><div class="stat-foot">${monthID(monthKey())}</div></div><div class="stat"><div class="stat-label">Transaksi</div><div class="stat-val">${tx.length}</div><div class="stat-foot">hari ini</div></div><div class="stat"><div class="stat-label">Pendapatan Bulanan</div><div class="stat-val">Rp ${rp(monthTotal())}</div><div class="stat-foot">${monthID(monthKey())}</div></div></div>${(!a)?`<button class="btn success block" style="margin-top:8px" onclick="clockIn()">Absen Sekarang</button>`:''}<div class="card" style="margin-top:8px"><div class="label">Bonus ++ Bulan Ini</div><div class="big" style="color:var(--blue)">Rp ${rp(totalBonus())}</div><div class="bonus-note">Bonus ini sudah termasuk total bonus keseluruhan.</div>${todayClosingBonusInline()}</div>`}
 function history(){const items=sortDesc(todayTx());page.innerHTML=`${top('Riwayat Hari Ini',`${items.length} transaksi · Rp ${rp(todayTotal())}`)}${syncBar()}<div class="list">${items.length?items.map(txItem).join(''):'<div class="empty">Belum ada transaksi hari ini.</div>'}</div>`}
 async function pinAsk(msg='Masukkan PIN'){return new Promise(res=>{window.__pin=v=>{closeModal();delete window.__pin;res(String(v||''))};modal('Verifikasi PIN',`<div class="hint" style="margin-bottom:8px">${esc(msg)}</div><input id="pinx" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="PIN" style="text-align:center;font-size:22px;font-weight:950">`,`<button class="btn" onclick="__pin('')">Batal</button><button class="btn primary" onclick="__pin(document.getElementById('pinx').value)">Lanjut</button>`);setTimeout(()=>$('pinx')?.focus(),60)})}
-function openTx(){if(!state.user)return;if(!canTx())return toast(isClosedToday()?'Transaksi sudah closing hari ini':'Absen dulu sebelum transaksi');primeSuccessSound();modal('Transaksi Baru',`<div class="tx-chip"><span>⚡ Input cepat</span><b>${timeNow()} WIB</b></div><div class="field"><div class="label">Catatan</div><input id="txn" placeholder="Tulis manual..." autocomplete="off"></div><div class="field"><div class="label">Nominal Rupiah</div><input id="txa" class="tx-amount-input" type="tel" inputmode="numeric" pattern="[0-9]*" placeholder="Rp 0" oninput="formatRupiahInput(this)" style="text-align:right;font-size:25px;font-weight:950"></div><div class="tx-note-mini">Jika internet putus, transaksi disimpan lokal dan otomatis sync saat online.</div>`,`<button class="btn" onclick="closeModal()">Batal</button><button class="btn primary" onclick="saveTx()">Simpan</button>`,'tx-modal')}
+function openTx(){if(!state.user)return;if(!canTx())return toast(isClosedToday()?'Transaksi sudah closing hari ini':'Absen dulu sebelum transaksi');primeSuccessSound();modal('Transaksi Baru',`<div class="tx-chip"><span>⚡ Input cepat</span><b>${timeNow()} WIB</b></div><div class="field"><div class="label">Catatan</div><input id="txn" placeholder="Tulis manual..." autocomplete="off"></div><div class="field"><div class="label">Nominal Rupiah</div><input id="txa" class="tx-amount-input" type="tel" inputmode="numeric" pattern="[0-9]*" placeholder="Rp 0" oninput="formatRupiahInput(this)" style="text-align:right;font-size:25px;font-weight:950"></div><div class="tx-note-mini">Transaksi wajib online. Sebelum simpan, absen & closing dicek ulang ke Firebase.</div>`,`<button class="btn" onclick="closeModal()">Batal</button><button class="btn primary" onclick="saveTx()">Simpan</button>`,'tx-modal')}
 async function saveTx(){
   primeSuccessSound();
   const amount=Number(onlyDigits($('txa')?.value)), note=String($('txn')?.value||'').trim()||'Transaksi';
@@ -248,6 +299,13 @@ async function saveTx(){
   if(!canTx()){
     closeModal();
     return toast(isClosedToday()?'Transaksi sudah closing. Terbuka otomatis besok.':'Absen dulu sebelum transaksi');
+  }
+  showLoad(true);
+  const verified=await verifyTransactionAllowedServer(todayKey());
+  showLoad(false);
+  if(!verified.ok){
+    closeModal();
+    return toast(verified.msg||'Transaksi ditolak. Cek absen ulang.');
   }
   const now=Date.now(), u=key(state.user.username), id='stafftx_'+u+'_'+now+'_'+Math.random().toString(36).slice(2,7);
   const payload={
@@ -282,8 +340,9 @@ async function saveTx(){
       state.syncError='Akses Firebase menolak transaksi.';
       toast('Akses Firebase menolak transaksi');
     }else{
-      addPending({type:'tx_add',id,user:u,payload,createdAtMs:now});
-      toast('Koneksi gagal. Disimpan lokal & akan sync otomatis.');
+      state.data.tx=state.data.tx.filter(t=>t.id!==id);
+      state.syncError='Transaksi gagal tersimpan. Cek koneksi, lalu coba simpan ulang.';
+      toast('Gagal menyimpan. Transaksi staff wajib online.');
     }
     render();
   }

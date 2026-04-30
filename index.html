@@ -59,6 +59,36 @@ function deleted(x){return x?.deleted===true||x?.deleted==='true'}
 function sortDesc(a){return [...(a||[])].sort((x,y)=>ms(y)-ms(x))}
 function isAdmin(u){return key(u?.role)==='admin'||ADMIN.includes(key(u?.username||u?.id))}
 function isDaily(){const r=key(state.user?.role);return r==='harian'||r==='daily'||r==='karyawan_harian'}
+function hasBonusValue(value){return value!==undefined&&value!==null&&String(value).trim()!==''}
+function globalTransactionBonusRate(){const r=Number(state.data.bonus?.transactionBonusRate);return Number.isFinite(r)&&r>=0?r:DEFAULT_BONUS.transactionBonusRate}
+function globalClosingBonusPerMinute(){const n=Number(state.data.bonus?.closingBonusPerMinute);return Number.isFinite(n)&&n>=0?n:DEFAULT_BONUS.closingBonusPerMinute}
+function userTransactionBonusRate(user=state.user){
+  const u=user||{};
+  if(hasBonusValue(u.transactionBonusRate)){const r=Number(u.transactionBonusRate);if(Number.isFinite(r)&&r>=0)return r}
+  if(hasBonusValue(u.transactionBonusPercent)){const p=Number(u.transactionBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100}
+  if(isDaily()){
+    const r=Number(u.dailyBonusRate);if(Number.isFinite(r)&&r>=0)return r;
+    const p=Number(u.dailyBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100;
+  }
+  return globalTransactionBonusRate();
+}
+function userTransactionBonusPercent(user=state.user){return Number((userTransactionBonusRate(user)*100).toFixed(3))}
+function userClosingBonusPerMinute(user=state.user){
+  const u=user||{};
+  if(hasBonusValue(u.closingBonusPerMinute)){const n=Number(u.closingBonusPerMinute);if(Number.isFinite(n)&&n>=0)return n}
+  return globalClosingBonusPerMinute();
+}
+function txBonusRate(t){
+  if(t){
+    if(hasBonusValue(t.bonusRate)){const r=Number(t.bonusRate);if(Number.isFinite(r)&&r>=0)return r}
+    if(hasBonusValue(t.transactionBonusRate)){const r=Number(t.transactionBonusRate);if(Number.isFinite(r)&&r>=0)return r}
+    if(hasBonusValue(t.bonusPercent)){const p=Number(t.bonusPercent);if(Number.isFinite(p)&&p>=0)return p/100}
+    if(hasBonusValue(t.transactionBonusPercent)){const p=Number(t.transactionBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100}
+  }
+  return userTransactionBonusRate();
+}
+function txBonusValue(t){return Math.round(Number(t?.amount||0)*txBonusRate(t))}
+function txBonusSum(list){return (list||[]).reduce((sum,t)=>sum+txBonusValue(t),0)}
 function roleLabel(){return isDaily()?'Karyawan Harian':'Karyawan Staff'}
 function roleCard(){const locked=isClosedToday()||(!isDaily()&&!todayAtt());const label=locked?'Terkunci':'Terbuka';const cls=locked?'red':'green';const note=isClosedToday()?'sudah closing':(isDaily()?'siap transaksi':(todayAtt()?'sudah absen':'belum absen'));const ico=locked?'🔒':'🔓';return `<div class="role-card ${locked?'locked':'open'}"><div class="between"><div><div class="role-title">Status Transaksi</div><div class="hint" style="margin-top:3px">${note}</div></div><div class="lock-status ${locked?'locked':'open'}"><span class="lock-ico">${ico}</span><span class="pill ${cls}">${label}</span></div></div></div>`}
 function headerTxStatus(){if(!state.user)return '';const locked=isClosedToday()||(!isDaily()&&!todayAtt());const label=locked?'Terkunci':'Terbuka';const ico=locked?'🔒':'🔓';return `<span class="trx-head-status ${locked?'locked':'open'}"><span class="lock-ico">${ico}</span>${label}</span>`}
@@ -101,11 +131,12 @@ async function loadStaffData(opts={}){
   if(!silent)showLoad(true);
   try{
     // Selaras dengan index: jangan bergantung ke orderBy/monthKey karena data lama/migrasi bisa belum konsisten.
-    const [tx,att,manual,bs]=await Promise.all([
+    const [tx,att,manual,bs,userSnap]=await Promise.all([
       getDocs(query(collection(db,'transactions'),where('user','==',u),limit(LIMITS.tx))),
       getDocs(query(collection(db,'attendance'),where('user','==',u),limit(LIMITS.att))),
       getDocs(query(collection(db,'manualBonuses'),where('user','==',u),limit(LIMITS.manual))),
-      getDoc(doc(db,'closings','__bonus_settings'))
+      getDoc(doc(db,'closings','__bonus_settings')),
+      getDoc(doc(db,'users',u))
     ]);
 
     let closingRows=[];
@@ -129,6 +160,27 @@ async function loadStaffData(opts={}){
     state.data.manual=sortDesc(manual.docs.map(d=>({id:d.id,...d.data()})).filter(b=>!deleted(b)));
     state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.type!=='bonus_settings'));
     state.data.bonus=bs.exists()?{...DEFAULT_BONUS,...bs.data()}:{...DEFAULT_BONUS};
+    if(userSnap.exists()){
+      const rawUser=userSnap.data()||{}, fresh={id:userSnap.id,username:rawUser.username||userSnap.id,...rawUser};
+      if(isAdmin(fresh)||fresh.active===false||deleted(fresh)){
+        localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION);state.user=null;toast('Akun sudah nonaktif / tidak valid');renderLogin();return;
+      }
+      state.user={
+        username:key(fresh.username||u),
+        name:fresh.name||u,
+        pin:String(fresh.pin||state.user.pin||''),
+        role:fresh.role||'staff',
+        transactionBonusRate:hasBonusValue(fresh.transactionBonusRate)?Number(fresh.transactionBonusRate):null,
+        transactionBonusPercent:hasBonusValue(fresh.transactionBonusPercent)?Number(fresh.transactionBonusPercent):null,
+        closingBonusPerMinute:hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null,
+        dailyBonusRate:Number(fresh.dailyBonusRate||0),
+        dailyBonusPercent:Number(fresh.dailyBonusPercent||0),
+        active:fresh.active!==false
+      };
+      const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+      localStorage.setItem(SESSION,JSON.stringify(saved));
+      localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
+    }
     state.lastSyncMs=Date.now();
     state.syncError='';
     applyPendingToState();
@@ -190,7 +242,7 @@ function monthAttendDays(){const m=monthKey(), set=new Set();state.data.att.forE
 function monthlyAttendancePerformance(){const m=monthKey();const rows=state.data.att.filter(a=>!deleted(a)&&attDate(a).startsWith(m));if(!rows.length)return null;let total=0,count=0;for(const rec of rows){const n=ms(rec);if(!n)continue;const p=parts(new Date(n));total+=Number(p.hour||0)*60+Number(p.minute||0);count++}if(!count)return null;const avg=total/count,h=Math.floor(avg/60),mi=Math.floor(avg%60),label=String(h).padStart(2,'0')+':'+String(mi).padStart(2,'0');return{avgLabel:label,isGood:avg<=440,count}}
 function averageAttendanceCard(){if(isDaily())return '';const p=monthlyAttendancePerformance();if(!p)return `<div class="card avg-att-card" style="margin-top:8px"><div class="between"><div><div class="label">Rata-rata Jam Absen</div><div class="hint" style="margin-top:4px">${monthID(monthKey())} · belum ada data</div></div><div class="stat-val" style="color:var(--muted)">--:--</div></div></div>`;const cls=p.isGood?'avg-good':'avg-warn',pill=p.isGood?'green':'amber',txt=p.isGood?'Performa baik':'Perlu ditingkatkan';return `<div class="card avg-att-card ${cls}" style="margin-top:8px"><div class="between"><div><div class="label">Rata-rata Jam Absen</div><div class="hint" style="margin-top:4px">${monthID(monthKey())} · ${p.count} hari hadir</div></div><div style="text-align:right"><div class="stat-val">${p.avgLabel}</div><span class="pill ${pill}">${txt}</span></div></div></div>`}
 function hasAttendOn(dateKey){return state.data.att.some(a=>!deleted(a)&&attDate(a)===String(dateKey||'').slice(0,10))}
-function rate(){const u=state.user||{};if(isDaily()){const r=Number(u.dailyBonusRate);if(Number.isFinite(r)&&r>=0)return r;const p=Number(u.dailyBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100}const globalRate=Number(state.data.bonus.transactionBonusRate);return Number.isFinite(globalRate)&&globalRate>=0?globalRate:DEFAULT_BONUS.transactionBonusRate}
+function rate(){return userTransactionBonusRate()}
 function manualBonus(){if(isDaily())return 0;const m=monthKey();return state.data.manual.filter(b=>!deleted(b)&&String(b.monthKey||txDate(b).slice(0,7))===m).reduce((sum,b)=>sum+Number(b.amount||0),0)}
 function activeClosings(){const m=monthKey();return state.data.closings.filter(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.monthKey||c.dateKey||'').startsWith(m))}
 function closingScope(c){return String(c?.scope||(c?.user?'user':'global')).toLowerCase()}
@@ -221,7 +273,7 @@ function closingBonusRows(){
 }
 function closingBonus(){return closingBonusRows().reduce((sum,x)=>sum+Number(x.val||0),0)}
 function closingCount(){return closingBonusRows().length}
-function trxBonus(){return Math.round(monthTotal()*rate())}
+function trxBonus(){return txBonusSum(monthTx())}
 function totalBonus(){return trxBonus()+closingBonus()+manualBonus()}
 function todayClosing(){
   const d=todayKey(), u=key(state.user?.username);
@@ -240,7 +292,7 @@ function closingTimeText(c){
 }
 function isClosedToday(){const d=todayKey(), u=key(state.user?.username);return state.data.closings.some(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.dateKey||'')===d&&((!c.user&&c.scope!=='user')||c.scope==='global'||key(c.user)===u))}
 function delayMin(tm=timeNow()){const m=String(tm).match(/^(\d{1,2}):(\d{2})$/);if(!m)return 0;return Math.max(0,Number(m[1])*60+Number(m[2])-1080)}
-function closingNotice(){if(isDaily()||!todayAtt())return '';const d=delayMin();if(!d||isClosedToday())return '';const rate=Number(state.data.bonus.closingBonusPerMinute||0);const est=d*rate;return `<div class="card warn" style="margin-bottom:8px"><b>Estimasi bonus closing</b><div class="hint" style="margin-top:4px;color:inherit">Estimasi bonus kamu Rp ${rp(est)}</div></div>`}
+function closingNotice(){if(isDaily()||!todayAtt())return '';const d=delayMin();if(!d||isClosedToday())return '';const rate=userClosingBonusPerMinute();const est=d*rate;return `<div class="card warn" style="margin-bottom:8px"><b>Estimasi bonus closing</b><div class="hint" style="margin-top:4px;color:inherit">Estimasi bonus kamu Rp ${rp(est)}</div></div>`}
 function todayClosingBonusNotice(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="card closing-bonus-card"><div class="between"><div><div class="label">Bonus Closing Hari Ini</div><div class="stat-val" style="font-size:20px;color:var(--green)">Rp ${rp(val)}</div><div class="hint" style="margin-top:3px">Bonus dari closing index hari ini</div></div><span class="pill green">Dapat</span></div></div>`}
 function todayClosingBonusInline(){if(isDaily())return '';const c=todayClosing();if(!c)return '';const val=Math.round(closingBonusValue(c));if(!val)return '';return `<div class="bonus-note" style="margin-top:4px;color:var(--green);font-weight:850">Bonus closing hari ini Rp ${rp(val)}</div>`}
 function canTx(){if(isClosedToday())return false;if(isDaily())return true;return !!todayAtt()}
@@ -290,7 +342,7 @@ function locText(){if(!state.pos)return `<button class="pill blue" onclick="upda
 function txItem(t){const pending=t.pending===true;const tag=pending?'<span class="pending-tag">MENUNGGU SYNC</span>':'';const canDelete=txDate(t)===todayKey()&&!pending;return `<div class="tx-row"><div class="tx-name"><div class="tx-title">${esc(t.note||'Transaksi')}</div><div class="tx-meta">${dateID(txDate(t))} · ${timeID(ms(t))}${tag}</div></div><div class="tx-nominal">Rp ${rp(t.amount)}</div><div class="tx-action">${canDelete?`<button class="btn sm danger tx-del-btn" onclick="delTx('${esc(t.id)}')">Hapus</button>`:(pending?'<span class="pill amber">Sync</span>':'')}</div></div>`}
 function home(){const tx=todayTx(), a=todayAtt(), c=todayClosing();
   if(isDaily()){
-    const todayBonus=Math.round(todayTotal()*rate());
+    const todayBonus=txBonusSum(tx);
     page.innerHTML=`${top('Mode Harian',state.user?.name||'Karyawan Harian')}${syncBar()}<div class="hero"><div class="kicker">Pendapatan Hari Ini</div><div class="big">Rp ${rp(todayTotal())}</div><div class="sub">${dateID(todayKey())} · ${tx.length} transaksi</div></div><div class="grid2" style="margin-top:8px"><div class="stat"><div class="stat-label">Transaksi Hari Ini</div><div class="stat-val">${tx.length}</div></div><div class="stat"><div class="stat-label">Pendapatan / Gaji</div><div class="stat-val">Rp ${rp(todayBonus)}</div></div></div>`;
     return;
   }
@@ -314,6 +366,10 @@ async function saveTx(){
     return toast(verified.msg||'Transaksi ditolak. Cek absen ulang.');
   }
   const now=Date.now(), u=key(state.user.username), id='stafftx_'+u+'_'+now+'_'+Math.random().toString(36).slice(2,7);
+  const userRole=isDaily()?'harian':'staff';
+  const txRate=userTransactionBonusRate();
+  const txPercent=Number((txRate*100).toFixed(3));
+  const closingSnapshot=userClosingBonusPerMinute();
   const payload={
     user:u,
     name:state.user.name||u,
@@ -321,11 +377,20 @@ async function saveTx(){
     note,
     dateKey:todayKey(),
     monthKey:monthKey(),
+    userRole,
+    role:userRole,
+    bonusGroup:userRole==='harian'?'harian':'staff',
+    bonusRate:txRate,
+    bonusPercent:txPercent,
+    transactionBonusRate:txRate,
+    transactionBonusPercent:txPercent,
+    closingBonusPerMinuteSnapshot:closingSnapshot,
+    bonusLogicVersion:3,
     createdAtMs:now,
     deleted:false,
     createdBy:u,
     clientId:id,
-    source:'trx_staff_sesuai_index'
+    source:'trx_staff_bonus_per_user_snapshot'
   };
   const local={id,...payload,pending:true};
   closeModal();
@@ -420,8 +485,8 @@ async function login(){
     if(isAdmin(data))throw new Error('Aplikasi ini khusus staff');
     if(data.active===false||deleted(data))throw new Error('User nonaktif');
     if(String(data.pin||'')!==p)throw new Error('PIN salah');
-    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
-    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null,dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
+    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
     localStorage.setItem(SESSION,JSON.stringify(saved));
     localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
     showLoad(false);
@@ -449,8 +514,8 @@ async function boot(){
       const rawData=snap.data()||{};
       const data={id:snap.id,username:rawData.username||snap.id,...rawData};
       if(!isAdmin(data)&&data.active!==false&&!deleted(data)&&String(data.pin||'')===pin){
-        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
-        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null,dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
+        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
         localStorage.setItem(SESSION,JSON.stringify(saved));
         localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
         await loadStaffData();

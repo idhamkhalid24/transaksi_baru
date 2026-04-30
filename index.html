@@ -399,8 +399,45 @@ async function boot(){
 }
 function logout(){localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION);state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}};renderLogin()}
 function go(p){state.page=p;render()}
-async function refresh(){await flushPending();await loadStaffData({skipFlush:true});toast('Data diperbarui')}
-function setupAutoSync(){setInterval(()=>{if(state.user&&!document.hidden&&Date.now()-state.lastSyncMs>60000)loadStaffData({silent:true})},70000);window.addEventListener('online',()=>{if(state.user){toast('Online lagi, sync dicek');flushPending();loadStaffData({silent:true})}});window.addEventListener('focus',()=>{if(state.user&&Date.now()-state.lastSyncMs>30000)loadStaffData({silent:true})});document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.user&&Date.now()-state.lastSyncMs>30000)loadStaffData({silent:true})})}
+async function refresh(){const changed=await checkDateChange();if(!changed){await flushPending();await loadStaffData({skipFlush:true})}toast('Data diperbarui')}
+
+// FIX: penjaga pergantian tanggal WIB.
+// Absen dan closing dihitung per dateKey, jadi UI wajib dirender ulang saat hari berganti.
+let APP_DATE_KEY=todayKey();
+let APP_DATE_CHECKING=false;
+async function checkDateChange(){
+  if(APP_DATE_CHECKING)return false;
+  const nowKey=todayKey();
+  if(nowKey===APP_DATE_KEY)return false;
+  APP_DATE_CHECKING=true;
+  APP_DATE_KEY=nowKey;
+  try{
+    closeModal();
+    state.lastSyncMs=0;
+    if(state.user){
+      toast('Tanggal berganti. Absen & closing diperbarui.');
+      await loadStaffData({silent:true});
+    }else{
+      render();
+    }
+  }catch(e){
+    console.warn('date change refresh failed',e);
+    render();
+  }finally{
+    APP_DATE_CHECKING=false;
+  }
+  return true;
+}
+function setupAutoSync(){
+  setInterval(async()=>{
+    const changed=await checkDateChange();
+    if(changed)return;
+    if(state.user&&!document.hidden&&Date.now()-state.lastSyncMs>60000)loadStaffData({silent:true});
+  },30000);
+  window.addEventListener('online',()=>{if(state.user){toast('Online lagi, sync dicek');flushPending();loadStaffData({silent:true})}});
+  window.addEventListener('focus',async()=>{const changed=await checkDateChange();if(changed)return;if(state.user&&Date.now()-state.lastSyncMs>30000)loadStaffData({silent:true})});
+  document.addEventListener('visibilitychange',async()=>{if(!document.hidden){const changed=await checkDateChange();if(changed)return;if(state.user&&Date.now()-state.lastSyncMs>30000)loadStaffData({silent:true})}});
+}
 window.login=login;window.logout=logout;window.toggleTheme=toggleTheme;window.refresh=refresh;window.retrySync=retrySync;window.go=go;window.openTx=openTx;window.saveTx=saveTx;window.delTx=delTx;window.closeModal=closeModal;window.updateLocation=updateLocation;window.clockIn=clockIn;window.formatRupiahInput=formatRupiahInput;
 setupAutoSync();
 boot();

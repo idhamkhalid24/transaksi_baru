@@ -58,7 +58,8 @@ function timeID(m){if(!m)return '--:--';const p=parts(new Date(m));return `${p.h
 function deleted(x){return x?.deleted===true||x?.deleted==='true'}
 function sortDesc(a){return [...(a||[])].sort((x,y)=>ms(y)-ms(x))}
 function isAdmin(u){return key(u?.role)==='admin'||ADMIN.includes(key(u?.username||u?.id))}
-function isDaily(){const r=key(state.user?.role);return r==='harian'||r==='daily'||r==='karyawan_harian'}
+function isDailyUser(user=state.user){const r=key(user?.role);return r==='harian'||r==='daily'||r==='karyawan_harian'}
+function isDaily(){return isDailyUser(state.user)}
 function hasBonusValue(value){return value!==undefined&&value!==null&&String(value).trim()!==''}
 function globalTransactionBonusRate(){const r=Number(state.data.bonus?.transactionBonusRate);return Number.isFinite(r)&&r>=0?r:DEFAULT_BONUS.transactionBonusRate}
 function globalClosingBonusPerMinute(){const n=Number(state.data.bonus?.closingBonusPerMinute);return Number.isFinite(n)&&n>=0?n:DEFAULT_BONUS.closingBonusPerMinute}
@@ -66,7 +67,7 @@ function userTransactionBonusRate(user=state.user){
   const u=user||{};
   if(hasBonusValue(u.transactionBonusRate)){const r=Number(u.transactionBonusRate);if(Number.isFinite(r)&&r>=0)return r}
   if(hasBonusValue(u.transactionBonusPercent)){const p=Number(u.transactionBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100}
-  if(isDaily()){
+  if(isDailyUser(u)){
     const r=Number(u.dailyBonusRate);if(Number.isFinite(r)&&r>=0)return r;
     const p=Number(u.dailyBonusPercent);if(Number.isFinite(p)&&p>=0)return p/100;
   }
@@ -336,6 +337,45 @@ async function verifyTransactionAllowedServer(dateKeyForTx=todayKey()){
     return {ok:false,msg:isPermissionError(e)?'Akses cek absen/closing ditolak Firebase.':'Gagal cek ulang absen/closing. Pastikan internet aktif.'};
   }
 }
+async function latestBonusSnapshotForSave(){
+  const u=key(state.user?.username);
+  if(!u)return {ok:false,msg:'Sesi login tidak valid. Login ulang.'};
+  try{
+    const [userSnap,bonusSnap]=await Promise.all([
+      getDoc(doc(db,'users',u)),
+      getDoc(doc(db,'closings','__bonus_settings'))
+    ]);
+    if(!userSnap.exists())return {ok:false,msg:'User tidak ditemukan. Login ulang.'};
+    const raw=userSnap.data()||{};
+    const fresh={id:userSnap.id,username:raw.username||userSnap.id,...raw};
+    if(isAdmin(fresh)||fresh.active===false||deleted(fresh))return {ok:false,msg:'Akun sudah nonaktif / tidak valid.'};
+    const freshUser={
+      username:key(fresh.username||u),
+      name:fresh.name||u,
+      pin:String(fresh.pin||state.user.pin||''),
+      role:fresh.role||'staff',
+      transactionBonusRate:hasBonusValue(fresh.transactionBonusRate)?Number(fresh.transactionBonusRate):null,
+      transactionBonusPercent:hasBonusValue(fresh.transactionBonusPercent)?Number(fresh.transactionBonusPercent):null,
+      closingBonusPerMinute:hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null,
+      dailyBonusRate:Number(fresh.dailyBonusRate||0),
+      dailyBonusPercent:Number(fresh.dailyBonusPercent||0),
+      active:fresh.active!==false
+    };
+    const freshBonus=bonusSnap.exists()?{...DEFAULT_BONUS,...bonusSnap.data()}:{...DEFAULT_BONUS};
+    state.user=freshUser;
+    state.data.bonus=freshBonus;
+    localStorage.setItem(SESSION,JSON.stringify(freshUser));
+    localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:freshUser.username,pin:freshUser.pin}));
+    const txRate=userTransactionBonusRate(freshUser);
+    const txPercent=Number((txRate*100).toFixed(3));
+    const closingSnapshot=userClosingBonusPerMinute(freshUser);
+    const userRole=isDailyUser(freshUser)?'harian':'staff';
+    return {ok:true,user:freshUser,bonus:freshBonus,txRate,txPercent,closingSnapshot,userRole};
+  }catch(e){
+    console.error('cek bonus terbaru gagal',e);
+    return {ok:false,msg:isPermissionError(e)?'Akses cek bonus ditolak Firebase.':'Gagal cek bonus terbaru. Pastikan internet aktif.'};
+  }
+}
 
 function statusPill(){if(isClosedToday())return `<span class="pill amber">Sudah closing</span>`;if(isDaily())return `<span class="pill blue">Karyawan harian</span>`;const a=todayAtt();return a?`<span class="pill green">Sudah absen · ${timeID(ms(a))}</span>`:`<span class="pill red">Belum absen</span>`}
 function locText(){if(!state.pos)return `<button class="pill blue" onclick="updateLocation()">Ambil GPS</button>`;const dist=distance(state.pos.lat,state.pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);return dist<=RADIUS_LIMIT?`<span class="pill green">Radius · ${Math.round(dist)}m</span>`:`<span class="pill red">Diluar · ${Math.round(dist)}m</span>`}
@@ -360,19 +400,22 @@ async function saveTx(){
   }
   showLoad(true);
   const verified=await verifyTransactionAllowedServer(todayKey());
-  showLoad(false);
   if(!verified.ok){
+    showLoad(false);
     closeModal();
     return toast(verified.msg||'Transaksi ditolak. Cek absen ulang.');
   }
-  const now=Date.now(), u=key(state.user.username), id='stafftx_'+u+'_'+now+'_'+Math.random().toString(36).slice(2,7);
-  const userRole=isDaily()?'harian':'staff';
-  const txRate=userTransactionBonusRate();
-  const txPercent=Number((txRate*100).toFixed(3));
-  const closingSnapshot=userClosingBonusPerMinute();
+  const latest=await latestBonusSnapshotForSave();
+  showLoad(false);
+  if(!latest.ok)return toast(latest.msg||'Gagal cek bonus terbaru. Transaksi belum disimpan.');
+  const now=Date.now(), u=key(latest.user.username||state.user.username), id='stafftx_'+u+'_'+now+'_'+Math.random().toString(36).slice(2,7);
+  const userRole=latest.userRole;
+  const txRate=latest.txRate;
+  const txPercent=latest.txPercent;
+  const closingSnapshot=latest.closingSnapshot;
   const payload={
     user:u,
-    name:state.user.name||u,
+    name:latest.user.name||state.user.name||u,
     amount,
     note,
     dateKey:todayKey(),
@@ -390,7 +433,7 @@ async function saveTx(){
     deleted:false,
     createdBy:u,
     clientId:id,
-    source:'trx_staff_bonus_per_user_snapshot'
+    source:'trx_staff_bonus_per_user_check_on_save'
   };
   const local={id,...payload,pending:true};
   closeModal();

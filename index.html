@@ -77,7 +77,23 @@ function getDeviceId(){
 }
 function localDeviceUser(){return key(localStorage.getItem(DEVICE_USER_KEY)||'')}
 function bindLocalDeviceUser(username){try{localStorage.setItem(DEVICE_USER_KEY,key(username))}catch(e){}}
+function clearLocalDeviceUser(){try{localStorage.removeItem(DEVICE_USER_KEY)}catch(e){}}
 function shortDevice(id){return String(id||'').slice(-6).toUpperCase()||'-'}
+async function isLocalDeviceStillOwnedBy(boundUser,deviceId){
+  const bound=key(boundUser);
+  if(!bound)return false;
+  try{
+    const snap=await getDocFromServer(doc(db,'users',bound));
+    if(!snap.exists())return false;
+    const raw=snap.data()||{};
+    const data={id:snap.id,username:raw.username||snap.id,...raw};
+    if(isDailyUser(data)||data.active===false||deleted(data))return false;
+    return String(data.deviceId||'').trim()===deviceId && data.deviceLocked!==false;
+  }catch(e){
+    console.warn('device owner check skipped',e?.code||e?.message||e);
+    return true;
+  }
+}
 async function verifyDeviceLockForLogin(userData,username){
   const u=key(username||userData?.username||userData?.id), deviceId=getDeviceId(), bound=localDeviceUser();
   if(isDailyUser(userData)){
@@ -95,7 +111,11 @@ async function verifyDeviceLockForLogin(userData,username){
     }catch(e){console.warn('daily device free update skipped',e?.code||e)}
     return {ok:true,deviceId:'',exempt:true};
   }
-  if(bound&&bound!==u)return {ok:false,msg:`Perangkat ini sudah terdaftar untuk user ${bound}. Hubungi admin jika ingin ganti user.`};
+  if(bound&&bound!==u){
+    const stillOwned=await isLocalDeviceStillOwnedBy(bound,deviceId);
+    if(stillOwned)return {ok:false,msg:`Perangkat ini masih terdaftar untuk user ${bound}. Reset device user tersebut dulu dari admin.`};
+    clearLocalDeviceUser();
+  }
   const serverDeviceId=String(userData?.deviceId||'').trim();
   if(serverDeviceId&&serverDeviceId!==deviceId)return {ok:false,msg:'Akun ini sudah terdaftar di perangkat lain. Hubungi admin untuk reset device.'};
   try{

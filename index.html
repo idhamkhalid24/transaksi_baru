@@ -68,8 +68,10 @@ const OFFICE_LOC={lat:-6.786168,lng:106.780918};
 const RADIUS_LIMIT=200, MEMBER_URL='https://idhamkhalid24.github.io/kode-khusus-member/';
 const SESSION='rocky_firebase_session_v1', LEGACY_SESSION='rocky_staff_compact_manual_v1', PENDING_KEY='rocky_staff_pending_sync_v2', MANUAL_BONUS_SEEN='rocky_staff_manual_bonus_seen_v1', FIRST_TX_PARTY_SEEN='rocky_staff_first_tx_party_seen_v1', HEADER_GUIDE_HIDDEN='rocky_staff_header_guide_hidden_v1', DEVICE_ID_KEY='rocky_staff_device_id_v1', DEVICE_USER_KEY='rocky_staff_device_user_v1', ADMIN=['admin'];
 const DEFAULT_BONUS={transactionBonusRate:.015,closingBonusPerMinute:100};
+const HEADER_GUIDE_NOTE_DOC_ID='__header_icon_guide_note';
+const DEFAULT_HEADER_GUIDE_NOTE='Bonus adalah apresiasi tambahan dan dapat berubah sewaktu-waktu. Fokus utama tetap pada penjualan, kinerja, pelayanan, dan tanggung jawab kerja.';
 const LIMITS={tx:400,att:400,manual:250,closings:120};
-const state={user:null,page:'home',pos:null,busy:false,lastSyncMs:0,syncing:false,syncError:'',data:{tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}}};
+const state={user:null,page:'home',pos:null,busy:false,lastSyncMs:0,syncing:false,syncError:'',data:{tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS},headerGuideNote:DEFAULT_HEADER_GUIDE_NOTE}};
 let clockInInFlight=false;
 let deviceSessionTimer=null;
 const $=id=>document.getElementById(id), page=$('page');
@@ -153,7 +155,7 @@ async function verifyDeviceLockForLogin(userData,username){
 function clearSessionAndRender(msg){
   try{localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION)}catch(e){}
   stopDeviceSessionWatch();
-  state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}};
+  state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS},headerGuideNote:DEFAULT_HEADER_GUIDE_NOTE};
   if(msg)toast(msg);
   renderLogin();
 }
@@ -378,9 +380,13 @@ function toggleHeaderGuide(){
 function headerGuideEyeIcon(hidden=false){
   return hidden?'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg>':'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a18.3 18.3 0 0 1-2.5 3.4"/><path d="M6.1 6.8C3.5 8.6 2 12 2 12s3.5 7 10 7a10.9 10.9 0 0 0 4.1-.8"/></svg>';
 }
+function headerGuideNoteText(){
+  const note=String(state.data.headerGuideNote||'').trim();
+  return note||DEFAULT_HEADER_GUIDE_NOTE;
+}
 function headerIconGuide(){
   const hidden=isHeaderGuideHidden();
-  if(hidden)return `<div class="card header-guide-card is-hidden"><div class="between"><div style="min-width:0"><div class="label">Catatan Bonus</div><div class="header-guide-bonus-quote">“Bonus adalah apresiasi tambahan dan dapat berubah sewaktu-waktu. Fokus utama tetap pada penjualan, kinerja, pelayanan, dan tanggung jawab kerja.”</div><div class="hint" style="margin-top:5px">Tap ikon mata untuk tampilkan Panduan Icon Header lagi.</div></div><button class="header-guide-eye" onclick="toggleHeaderGuide()" aria-label="Tampilkan Panduan Icon Header" title="Tampilkan">${headerGuideEyeIcon(true)}</button></div></div>`;
+  if(hidden)return `<div class="card header-guide-card is-hidden"><div class="between"><div style="min-width:0"><div class="label">Note's :</div><div class="header-guide-bonus-quote">“${esc(headerGuideNoteText())}”</div><div class="hint" style="margin-top:5px">Tap ikon mata untuk tampilkan Panduan Icon Header lagi.</div></div><button class="header-guide-eye" onclick="toggleHeaderGuide()" aria-label="Tampilkan Panduan Icon Header" title="Tampilkan">${headerGuideEyeIcon(true)}</button></div></div>`;
   const themeIcon=getTheme()==='dark'?'☀':'☾';
   const locked=isClosedToday()||(!isDaily()&&!todayAtt());
   const lockIcon=locked?'🔒':'🔓';
@@ -398,12 +404,13 @@ async function loadStaffData(opts={}){
   if(!silent)showLoad(true);
   try{
     // Selaras dengan index: jangan bergantung ke orderBy/monthKey karena data lama/migrasi bisa belum konsisten.
-    const [tx,att,manual,bs,userSnap]=await Promise.all([
+    const [tx,att,manual,bs,userSnap,guideNoteSnap]=await Promise.all([
       getDocs(query(collection(db,'transactions'),where('user','==',u),limit(LIMITS.tx))),
       getDocs(query(collection(db,'attendance'),where('user','==',u),limit(LIMITS.att))),
       getDocs(query(collection(db,'manualBonuses'),where('user','==',u),limit(LIMITS.manual))),
       getDocFromServer(doc(db,'closings','__bonus_settings')),
-      getDocFromServer(doc(db,'users',u))
+      getDocFromServer(doc(db,'users',u)),
+      getDocFromServer(doc(db,'closings',HEADER_GUIDE_NOTE_DOC_ID)).catch(()=>null)
     ]);
 
     let closingRows=[];
@@ -429,7 +436,8 @@ async function loadStaffData(opts={}){
     state.data.tx=sortDesc(tx.docs.map(d=>({id:d.id,...d.data()})));
     state.data.att=dedupeAttendanceRows(att.docs.map(d=>({id:d.id,...d.data()})));
     state.data.manual=sortDesc(manual.docs.map(d=>({id:d.id,...d.data()})).filter(b=>!deleted(b)));
-    state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.dateKey!=='__bonus_settings'&&c.id!=='__risma_manual_closing'&&c.dateKey!=='__risma_manual_closing'&&c.type!=='bonus_settings'&&c.type!=='closing_manual_config'));
+    state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.dateKey!=='__bonus_settings'&&c.id!=='__risma_manual_closing'&&c.dateKey!=='__risma_manual_closing'&&c.id!==HEADER_GUIDE_NOTE_DOC_ID&&c.dateKey!==HEADER_GUIDE_NOTE_DOC_ID&&c.type!=='bonus_settings'&&c.type!=='closing_manual_config'&&c.type!=='header_guide_note'));
+    state.data.headerGuideNote=(guideNoteSnap&&guideNoteSnap.exists())?String((guideNoteSnap.data()||{}).note||DEFAULT_HEADER_GUIDE_NOTE):DEFAULT_HEADER_GUIDE_NOTE;
     state.data.bonus=bs.exists()?{...DEFAULT_BONUS,...bs.data()}:{...DEFAULT_BONUS};
     if(userSnap.exists()){
       const rawUser=userSnap.data()||{}, fresh={id:userSnap.id,username:rawUser.username||userSnap.id,...rawUser};

@@ -56,7 +56,7 @@ const firebaseConfig={apiKey:'AIzaSyAqmTEKnLKOXcmOoR9RrXksNe5_Fix42w8',authDomai
 const app=initializeApp(firebaseConfig), db=getFirestore(app);
 const OFFICE_LOC={lat:-6.786168,lng:106.780918};
 const RADIUS_LIMIT=200, MEMBER_URL='https://idhamkhalid24.github.io/kode-khusus-member/';
-const SESSION='rocky_firebase_session_v1', LEGACY_SESSION='rocky_staff_compact_manual_v1', PENDING_KEY='rocky_staff_pending_sync_v2', MANUAL_BONUS_SEEN='rocky_staff_manual_bonus_seen_v1', FIRST_TX_PARTY_SEEN='rocky_staff_first_tx_party_seen_v1', ADMIN=['admin'];
+const SESSION='rocky_firebase_session_v1', LEGACY_SESSION='rocky_staff_compact_manual_v1', PENDING_KEY='rocky_staff_pending_sync_v2', MANUAL_BONUS_SEEN='rocky_staff_manual_bonus_seen_v1', FIRST_TX_PARTY_SEEN='rocky_staff_first_tx_party_seen_v1', DEVICE_ID_KEY='rocky_staff_device_id_v1', DEVICE_USER_KEY='rocky_staff_device_user_v1', ADMIN=['admin'];
 const DEFAULT_BONUS={transactionBonusRate:.015,closingBonusPerMinute:100};
 const LIMITS={tx:400,att:400,manual:250,closings:120};
 const state={user:null,page:'home',pos:null,busy:false,lastSyncMs:0,syncing:false,syncError:'',data:{tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}}};
@@ -65,6 +65,59 @@ const $=id=>document.getElementById(id), page=$('page');
 
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function key(v){return String(v||'').trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_\-.]/g,'')}
+function getDeviceId(){
+  let id=localStorage.getItem(DEVICE_ID_KEY)||'';
+  if(!id){
+    const rnd=(crypto?.randomUUID?crypto.randomUUID():(Date.now().toString(36)+'_'+Math.random().toString(36).slice(2)));
+    id='dev_'+String(rnd).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,48);
+    localStorage.setItem(DEVICE_ID_KEY,id);
+  }
+  return id;
+}
+function localDeviceUser(){return key(localStorage.getItem(DEVICE_USER_KEY)||'')}
+function bindLocalDeviceUser(username){try{localStorage.setItem(DEVICE_USER_KEY,key(username))}catch(e){}}
+function shortDevice(id){return String(id||'').slice(-6).toUpperCase()||'-'}
+async function verifyDeviceLockForLogin(userData,username){
+  const u=key(username||userData?.username||userData?.id), deviceId=getDeviceId(), bound=localDeviceUser();
+  if(isDailyUser(userData)){
+    try{
+      await setDoc(doc(db,'users',u),{
+        deviceId:'',
+        deviceLocked:false,
+        deviceUser:'',
+        deviceApp:'staff',
+        deviceLabel:'Harian bebas login',
+        devicePolicy:'open_any_device',
+        deviceLastLoginAt:serverTimestamp(),
+        deviceLastLoginAtMs:Date.now()
+      },{merge:true});
+    }catch(e){console.warn('daily device free update skipped',e?.code||e)}
+    return {ok:true,deviceId:'',exempt:true};
+  }
+  if(bound&&bound!==u)return {ok:false,msg:`Perangkat ini sudah terdaftar untuk user ${bound}. Hubungi admin jika ingin ganti user.`};
+  const serverDeviceId=String(userData?.deviceId||'').trim();
+  if(serverDeviceId&&serverDeviceId!==deviceId)return {ok:false,msg:'Akun ini sudah terdaftar di perangkat lain. Hubungi admin untuk reset device.'};
+  try{
+    await setDoc(doc(db,'users',u),{
+      deviceId,
+      deviceLocked:true,
+      deviceUser:u,
+      deviceApp:'staff',
+      deviceLabel:'Staff App '+shortDevice(deviceId),
+      deviceUserAgent:String(navigator.userAgent||'').slice(0,180),
+      devicePlatform:String(navigator.platform||'').slice(0,80),
+      deviceLastLoginAt:serverTimestamp(),
+      deviceLastLoginAtMs:Date.now(),
+      deviceLockedAt:serverDeviceId?(userData?.deviceLockedAt||serverTimestamp()):serverTimestamp(),
+      deviceLockedAtMs:Number(userData?.deviceLockedAtMs||Date.now())
+    },{merge:true});
+    bindLocalDeviceUser(u);
+    return {ok:true,deviceId};
+  }catch(e){
+    console.error('device lock failed',e);
+    return {ok:false,msg:isPermissionError(e)?'Akses Firebase menolak kunci perangkat. Hubungi admin.':'Gagal mengunci perangkat. Pastikan internet aktif.'};
+  }
+}
 function rp(v){return Number(v||0).toLocaleString('id-ID')}
 function parts(d=new Date()){return Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(d).map(p=>[p.type,p.value]))}
 function todayKey(d=new Date()){const p=parts(d);return `${p.year}-${p.month}-${p.day}`}
@@ -237,7 +290,7 @@ function headerIconGuide(){
 }
 function showStaffAbsenFab(){return !!state.user&&state.page==='home'&&!isDaily()&&!todayAtt()&&!isClosedToday()}
 function nav(){const n=$('nav'),f=$('fab'),af=$('absenFab');if(!state.user){n.style.display='none';f.style.display='none';if(af)af.style.display='none';return}n.style.display='flex';f.style.display='block';if(af)af.style.display=showStaffAbsenFab()?'flex':'none';document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));$(`nav-${state.page}`)?.classList.add('active')}
-function renderLogin(){nav();page.innerHTML=`<div class="login"><div class="login-card"><div class="hero" style="text-align:center"><div class="big">ROCKY HIJAB</div><div class="sub">Koleksi Terbaik Untuk Muslimah Hebat</div></div><div class="card" style="margin-top:10px"><div class="field"><div class="label">Username Staff</div><input id="lu" autocomplete="username" placeholder="username"></div><div class="field"><div class="label">PIN</div><input id="lp" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="PIN"></div><button class="btn primary block" onclick="login()">Masuk</button></div></div></div>`}
+function renderLogin(){nav();page.innerHTML=`<div class="login"><div class="login-card"><div class="hero" style="text-align:center"><div class="big">ROCKY HIJAB</div><div class="sub">Koleksi Terbaik Untuk Muslimah Hebat</div></div><div class="card" style="margin-top:10px"><div class="field"><div class="label">Username Staff</div><input id="lu" autocomplete="username" placeholder="username"></div><div class="field"><div class="label">PIN</div><input id="lp" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="PIN"></div><button class="btn primary block" onclick="login()">Masuk</button><div class="hint" style="margin-top:8px;text-align:center">Staff dikunci 1 perangkat. Karyawan harian bebas login di perangkat mana saja.</div></div></div></div>`}
 function render(){if(!state.user)return renderLogin();nav();if(state.page==='history')return history();return home()}
 async function getQueryDocs(makePrimary,makeFallback){try{return await getDocs(makePrimary())}catch(e){console.warn('primary query fallback',e?.code||e);return await getDocs(makeFallback())}}
 async function loadStaffData(opts={}){
@@ -679,8 +732,10 @@ async function login(){
     if(isAdmin(data))throw new Error('Aplikasi ini khusus staff');
     if(data.active===false||deleted(data))throw new Error('User nonaktif');
     if(String(data.pin||'')!==p)throw new Error('PIN salah');
-    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
-    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+    const lock=await verifyDeviceLockForLogin(data,u);
+    if(!lock.ok)throw new Error(lock.msg);
+    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false,deviceId:lock.deviceId};
+    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId};
     localStorage.setItem(SESSION,JSON.stringify(saved));
     localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
     showLoad(false);
@@ -703,13 +758,20 @@ async function boot(){
       const username=key(s.username||s.user||s.id);
       const pin=String(s.pin||'');
       if(!username||!pin)continue;
-      const snap=await getDoc(doc(db,'users',username));
+      const snap=await getDocFromServer(doc(db,'users',username));
       if(!snap.exists())continue;
       const rawData=snap.data()||{};
       const data={id:snap.id,username:rawData.username||snap.id,...rawData};
       if(!isAdmin(data)&&data.active!==false&&!deleted(data)&&String(data.pin||'')===pin){
-        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false};
-        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+        const lock=await verifyDeviceLockForLogin(data,username);
+        if(!lock.ok){
+          localStorage.removeItem(SESSION);
+          localStorage.removeItem(LEGACY_SESSION);
+          toast(lock.msg);
+          break;
+        }
+        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false,deviceId:lock.deviceId};
+        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId};
         localStorage.setItem(SESSION,JSON.stringify(saved));
         localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
         await loadStaffData();

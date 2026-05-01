@@ -390,24 +390,28 @@ async function loadStaffData(opts={}){
 
     let closingRows=[];
     try{
-      const cs=await getDocs(query(collection(db,'closings'),limit(LIMITS.closings)));
-      closingRows=cs.docs.map(d=>({id:d.id,...d.data()}));
-    }catch(closeErr){
-      console.warn('closing query fallback',closeErr?.code||closeErr);
-      const m=monthKey();
-      const [globalRows,userRows]=await Promise.all([
-        getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('scope','==','global'),limit(LIMITS.closings)),()=>query(collection(db,'closings'),where('scope','==','global'),limit(LIMITS.closings))),
-        getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('user','==',u),limit(LIMITS.closings)),()=>query(collection(db,'closings'),where('user','==',u),limit(LIMITS.closings)))
+      // Selaras dengan index terbaru: data closing bisa banyak karena per-user.
+      // Staff hanya perlu: closing hari ini, closing global bulan ini, dan closing user sendiri.
+      // Ini lebih hemat read dan mencegah bonus/status miss saat collection closings sudah besar.
+      const m=monthKey(), d=todayKey();
+      const [todayRows,globalRows,userRows]=await Promise.all([
+        getQueryDocs(()=>query(collection(db,'closings'),where('dateKey','==',d),limit(120)),()=>query(collection(db,'closings'),where('dateKey','==',d),limit(120))),
+        getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('scope','==','global'),limit(80)),()=>query(collection(db,'closings'),where('scope','==','global'),limit(120))),
+        getQueryDocs(()=>query(collection(db,'closings'),where('monthKey','==',m),where('user','==',u),limit(120)),()=>query(collection(db,'closings'),where('user','==',u),limit(120)))
       ]);
       const map=new Map();
-      [...globalRows.docs,...userRows.docs].forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
+      [...todayRows.docs,...globalRows.docs,...userRows.docs].forEach(d=>map.set(d.id,{id:d.id,...d.data()}));
       closingRows=[...map.values()];
+    }catch(closeErr){
+      console.warn('closing query fallback',closeErr?.code||closeErr);
+      const cs=await getDocs(query(collection(db,'closings'),limit(LIMITS.closings)));
+      closingRows=cs.docs.map(d=>({id:d.id,...d.data()}));
     }
 
     state.data.tx=sortDesc(tx.docs.map(d=>({id:d.id,...d.data()})));
     state.data.att=dedupeAttendanceRows(att.docs.map(d=>({id:d.id,...d.data()})));
     state.data.manual=sortDesc(manual.docs.map(d=>({id:d.id,...d.data()})).filter(b=>!deleted(b)));
-    state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.type!=='bonus_settings'));
+    state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.dateKey!=='__bonus_settings'&&c.id!=='__risma_manual_closing'&&c.dateKey!=='__risma_manual_closing'&&c.type!=='bonus_settings'&&c.type!=='closing_manual_config'));
     state.data.bonus=bs.exists()?{...DEFAULT_BONUS,...bs.data()}:{...DEFAULT_BONUS};
     if(userSnap.exists()){
       const rawUser=userSnap.data()||{}, fresh={id:userSnap.id,username:rawUser.username||userSnap.id,...rawUser};

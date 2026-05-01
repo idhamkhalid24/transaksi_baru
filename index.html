@@ -50,6 +50,7 @@ const SESSION='rocky_firebase_session_v1', LEGACY_SESSION='rocky_staff_compact_m
 const DEFAULT_BONUS={transactionBonusRate:.015,closingBonusPerMinute:100};
 const LIMITS={tx:400,att:400,manual:250,closings:120};
 const state={user:null,page:'home',pos:null,busy:false,lastSyncMs:0,syncing:false,syncError:'',data:{tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}}};
+let clockInInFlight=false;
 const $=id=>document.getElementById(id), page=$('page');
 
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
@@ -105,6 +106,16 @@ function headerTxStatus(){if(!state.user)return '';const locked=isClosedToday()|
 function txDate(t){return String(t.dateKey||(ms(t)?todayKey(new Date(ms(t))):'')).slice(0,10)}
 function txMonth(t){return String(t.monthKey||txDate(t).slice(0,7))}
 function attDate(a){return String(a.dateKey||(ms(a)?todayKey(new Date(ms(a))):'')).slice(0,10)}
+function attendanceDocId(user,dateKey=todayKey()){return 'staffatt_'+key(user)+'_'+String(dateKey||todayKey()).slice(0,10)}
+function dedupeAttendanceRows(rows){
+  const map=new Map();
+  sortDesc((rows||[]).filter(a=>a&&!deleted(a))).forEach(a=>{
+    const u=key(a.user||state.user?.username), d=attDate(a), k=u+'_'+d;
+    if(!u||!d)return;
+    if(!map.has(k))map.set(k,a);
+  });
+  return sortDesc([...map.values()]);
+}
 function showLoad(v){state.busy=!!v;$('loading').style.display=v?'flex':'none'}
 function toast(msg){const t=$('toast');t.textContent=msg;t.className='toast show';setTimeout(()=>t.className='toast',2100)}
 function manualSeenKey(){return MANUAL_BONUS_SEEN+'_'+key(state.user?.username||'guest')}
@@ -195,7 +206,14 @@ function removePending(id){setPending(getPending().filter(x=>x.id!==id))}
 function isPermissionError(e){return String(e?.code||e?.message||'').toLowerCase().includes('permission')}
 function localTxFromPending(p){return {id:p.id,...(p.payload||{}),pending:true}}
 function localAttFromPending(p){return {id:p.id,...(p.payload||{}),pending:true}}
-function applyPendingToState(){const p=pendingForUser();p.forEach(x=>{if(x.type==='tx_add'&&!state.data.tx.some(t=>String(t.id)===String(x.id)))state.data.tx.unshift(localTxFromPending(x));if(x.type==='att_add'&&!state.data.att.some(a=>String(a.id)===String(x.id)))state.data.att.unshift(localAttFromPending(x))})}
+function applyPendingToState(){
+  const p=pendingForUser();
+  p.forEach(x=>{
+    if(x.type==='tx_add'&&!state.data.tx.some(t=>String(t.id)===String(x.id)))state.data.tx.unshift(localTxFromPending(x));
+    if(x.type==='att_add'&&!state.data.att.some(a=>String(a.id)===String(x.id)))state.data.att.unshift(localAttFromPending(x));
+  });
+  state.data.att=dedupeAttendanceRows(state.data.att);
+}
 function syncTimeText(){if(!state.lastSyncMs)return 'Belum sync';const diff=Math.max(0,Math.round((Date.now()-state.lastSyncMs)/1000));if(diff<60)return 'baru saja';if(diff<3600)return `${Math.floor(diff/60)} menit lalu`;return timeID(state.lastSyncMs)}
 function syncBar(){const pc=pendingForUser().length, cls=pc?'syncbar sync-pending':'syncbar';const msg=pc?`<b>${pc} data belum terkirim</b><span> akan dicoba otomatis</span>`:`<span>Sync terakhir: <b>${syncTimeText()}</b></span>`;const err=state.syncError?`<div class="hint" style="color:var(--red);margin-top:2px">${esc(state.syncError)}</div>`:'';return `<div class="${cls}"><div>${msg}${err}</div><button class="btn sm" onclick="retrySync()">Sync</button></div>`}
 function top(title,sub){const icon=getTheme()==='dark'?'☀':'☾';return `<div class="top"><div class="brand"><div class="title">${esc(title)}</div><div class="sub">${esc(sub||state.user?.name||'Staff')}</div></div><div class="row"><a class="btn sm member" href="${MEMBER_URL}" target="_blank" rel="noopener">Member</a>${headerTxStatus()}<button class="btn sm" onclick="refresh()">Refresh</button><button class="btn sm" onclick="toggleTheme()">${icon}</button><button class="btn sm danger" onclick="logout()">Keluar</button></div></div>`}
@@ -234,7 +252,7 @@ async function loadStaffData(opts={}){
     }
 
     state.data.tx=sortDesc(tx.docs.map(d=>({id:d.id,...d.data()})));
-    state.data.att=sortDesc(att.docs.map(d=>({id:d.id,...d.data()})).filter(a=>!deleted(a)));
+    state.data.att=dedupeAttendanceRows(att.docs.map(d=>({id:d.id,...d.data()})));
     state.data.manual=sortDesc(manual.docs.map(d=>({id:d.id,...d.data()})).filter(b=>!deleted(b)));
     state.data.closings=sortDesc(closingRows.filter(c=>c.id!=='__bonus_settings'&&c.type!=='bonus_settings'));
     state.data.bonus=bs.exists()?{...DEFAULT_BONUS,...bs.data()}:{...DEFAULT_BONUS};
@@ -294,7 +312,13 @@ async function flushPending(){
         }
         await setDoc(doc(db,'transactions',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
       }
-      else if(item.type==='att_add')await setDoc(doc(db,'attendance',item.id),{...(item.payload||{}),createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+      else if(item.type==='att_add'){
+        const payload=item.payload||{};
+        const d=String(payload.dateKey||todayKey()).slice(0,10), docId=attendanceDocId(item.user||payload.user,d);
+        const existing=await getDocFromServer(doc(db,'attendance',docId));
+        if(!existing.exists())await setDoc(doc(db,'attendance',docId),{...payload,clientId:docId,dateKey:d,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+        item.id=docId;
+      }
       else remain.push(item);
     }catch(e){
       console.warn('pending sync failed',e?.code||e);
@@ -316,11 +340,11 @@ function todayTx(){const d=todayKey();return liveTx().filter(t=>txDate(t)===d)}
 function monthTx(){const m=monthKey();return liveTx().filter(t=>txMonth(t)===m)}
 function todayTotal(){return todayTx().reduce((s,t)=>s+Number(t.amount||0),0)}
 function monthTotal(){return monthTx().reduce((s,t)=>s+Number(t.amount||0),0)}
-function todayAtt(){const d=todayKey();return state.data.att.find(a=>!deleted(a)&&attDate(a)===d)}
-function monthAttendDays(){const m=monthKey(), set=new Set();state.data.att.forEach(a=>{if(!deleted(a)&&attDate(a).startsWith(m))set.add(attDate(a))});return set.size}
-function monthlyAttendancePerformance(){const m=monthKey();const rows=state.data.att.filter(a=>!deleted(a)&&attDate(a).startsWith(m));if(!rows.length)return null;let total=0,count=0;for(const rec of rows){const n=ms(rec);if(!n)continue;const p=parts(new Date(n));total+=Number(p.hour||0)*60+Number(p.minute||0);count++}if(!count)return null;const avg=total/count,h=Math.floor(avg/60),mi=Math.floor(avg%60),label=String(h).padStart(2,'0')+':'+String(mi).padStart(2,'0');return{avgLabel:label,isGood:avg<=440,count}}
+function todayAtt(){const d=todayKey(),u=key(state.user?.username);return dedupeAttendanceRows(state.data.att).find(a=>!deleted(a)&&attDate(a)===d&&(!u||key(a.user)===u))}
+function monthAttendDays(){const m=monthKey(), set=new Set();dedupeAttendanceRows(state.data.att).forEach(a=>{if(!deleted(a)&&attDate(a).startsWith(m))set.add(attDate(a))});return set.size}
+function monthlyAttendancePerformance(){const m=monthKey();const rows=dedupeAttendanceRows(state.data.att).filter(a=>!deleted(a)&&attDate(a).startsWith(m));if(!rows.length)return null;let total=0,count=0;for(const rec of rows){const n=ms(rec);if(!n)continue;const p=parts(new Date(n));total+=Number(p.hour||0)*60+Number(p.minute||0);count++}if(!count)return null;const avg=total/count,h=Math.floor(avg/60),mi=Math.floor(avg%60),label=String(h).padStart(2,'0')+':'+String(mi).padStart(2,'0');return{avgLabel:label,isGood:avg<=440,count}}
 function averageAttendanceCard(){if(isDaily())return '';const p=monthlyAttendancePerformance();if(!p)return `<div class="card avg-att-card" style="margin-top:8px"><div class="between"><div><div class="label">Rata-rata Jam Absen</div><div class="hint" style="margin-top:4px">${monthID(monthKey())} · belum ada data</div></div><div class="stat-val" style="color:var(--muted);transform:translateX(-10px)">--:--</div></div></div>`;const cls=p.isGood?'avg-good':'avg-warn',pill=p.isGood?'green':'amber',txt=p.isGood?'Performa baik':'Perlu ditingkatkan';return `<div class="card avg-att-card ${cls}" style="margin-top:8px"><div class="between"><div><div class="label">Rata-rata Jam Absen</div><div class="hint" style="margin-top:4px">${monthID(monthKey())} · ${p.count} hari hadir</div></div><div style="text-align:center;transform:translateX(-10px)"><div class="stat-val">${p.avgLabel}</div><span class="pill ${pill}">${txt}</span></div></div></div>`}
-function hasAttendOn(dateKey){return state.data.att.some(a=>!deleted(a)&&attDate(a)===String(dateKey||'').slice(0,10))}
+function hasAttendOn(dateKey){const u=key(state.user?.username),d=String(dateKey||'').slice(0,10);return dedupeAttendanceRows(state.data.att).some(a=>!deleted(a)&&attDate(a)===d&&(!u||key(a.user)===u))}
 function rate(){return userTransactionBonusRate()}
 function manualBonus(){if(isDaily())return 0;const m=monthKey();return state.data.manual.filter(b=>!deleted(b)&&String(b.monthKey||txDate(b).slice(0,7))===m).reduce((sum,b)=>sum+Number(b.amount||0),0)}
 function activeClosings(){const m=monthKey();return state.data.closings.filter(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.monthKey||c.dateKey||'').startsWith(m))}
@@ -564,21 +588,44 @@ async function delTx(id){
 function getPosition(){return new Promise((res,rej)=>{if(!navigator.geolocation)return rej(new Error('GPS tidak tersedia'));navigator.geolocation.getCurrentPosition(p=>res({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy||0}),e=>rej(e),{enableHighAccuracy:true,timeout:12000,maximumAge:0})})}
 function distance(a,b,c,d){const R=6371000,rad=x=>x*Math.PI/180,da=rad(c-a),db=rad(d-b),x=Math.sin(da/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(db/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x))}
 async function updateLocation(){try{state.pos=await getPosition();render()}catch(e){toast('GPS gagal / izin lokasi ditolak')}}
-async function clockIn(){
-  if(todayAtt())return toast('Sudah absen hari ini');
-  let pos=state.pos;
-  try{if(!pos)pos=await getPosition();state.pos=pos}catch(e){return toast('GPS gagal / izin lokasi ditolak')}
-  const dist=distance(pos.lat,pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);
-  if(dist>RADIUS_LIMIT)return toast(`Diluar radius (${Math.round(dist)}m)`);
-  showLoad(true);
-  const now=Date.now(),u=key(state.user.username),id='staffatt_'+u+'_'+todayKey()+'_'+now;
-  const payload={user:u,name:state.user.name||u,dateKey:todayKey(),createdAtMs:now,loc:pos,lat:pos.lat,lng:pos.lng,deleted:false,clientId:id,source:'trx_staff_sesuai_index'};
+async function serverAttendanceToday(user,dateKey=todayKey()){
+  const u=key(user), d=String(dateKey||todayKey()).slice(0,10), docId=attendanceDocId(u,d);
   try{
+    const direct=await getDocFromServer(doc(db,'attendance',docId));
+    if(direct.exists())return {id:direct.id,...direct.data()};
+  }catch(e){console.warn('cek absen direct gagal',e?.code||e)}
+  try{
+    const snap=await getDocsFromServer(query(collection(db,'attendance'),where('dateKey','==',d),limit(120)));
+    const rows=snap.docs.map(x=>({id:x.id,...x.data()})).filter(a=>!deleted(a)&&key(a.user)===u&&attDate(a)===d);
+    if(rows.length)return sortDesc(rows)[0];
+  }catch(e){console.warn('cek absen tanggal gagal',e?.code||e)}
+  return null;
+}
+async function clockIn(){
+  if(clockInInFlight||state.busy)return toast('Absen sedang diproses');
+  if(!state.user)return toast('Silakan login ulang');
+  const u=key(state.user.username), d=todayKey(), id=attendanceDocId(u,d);
+  if(todayAtt())return toast('Sudah absen hari ini');
+  clockInInFlight=true;
+  let pos=state.pos;
+  try{
+    const existing=await serverAttendanceToday(u,d);
+    if(existing){
+      state.data.att=dedupeAttendanceRows([{id:existing.id,...existing},...state.data.att]);
+      render();
+      return toast('Sudah absen hari ini');
+    }
+    try{if(!pos)pos=await getPosition();state.pos=pos}catch(e){return toast('GPS gagal / izin lokasi ditolak')}
+    const dist=distance(pos.lat,pos.lng,OFFICE_LOC.lat,OFFICE_LOC.lng);
+    if(dist>RADIUS_LIMIT)return toast(`Diluar radius (${Math.round(dist)}m)`);
+    showLoad(true);
+    const now=Date.now();
+    const payload={user:u,name:state.user.name||u,dateKey:d,createdAtMs:now,loc:pos,lat:pos.lat,lng:pos.lng,deleted:false,clientId:id,source:'trx_staff_sesuai_index'};
     const local={id,...payload,pending:true};
-    state.data.att=[local,...state.data.att];
+    state.data.att=dedupeAttendanceRows([local,...state.data.att]);
     render();
-    await setDoc(doc(db,'attendance',id),{...payload,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:false});
-    state.data.att=state.data.att.map(a=>a.id===id?{...a,pending:false}:a);
+    await setDoc(doc(db,'attendance',id),{...payload,createdAt:serverTimestamp(),syncedAt:serverTimestamp(),syncedAtMs:Date.now()},{merge:true});
+    state.data.att=dedupeAttendanceRows(state.data.att.map(a=>a.id===id?{...a,pending:false}:a));
     removePending(id);
     toast('Absen berhasil');
   }catch(e){
@@ -588,12 +635,17 @@ async function clockIn(){
       state.syncError='Akses Firebase menolak absen.';
       toast('Akses Firebase menolak absen');
     }else{
+      const now=Date.now();
+      const payload={user:u,name:state.user.name||u,dateKey:d,createdAtMs:now,loc:pos||null,lat:pos?.lat||null,lng:pos?.lng||null,deleted:false,clientId:id,source:'trx_staff_sesuai_index'};
+      state.data.att=dedupeAttendanceRows([{id,...payload,pending:true},...state.data.att]);
       addPending({type:'att_add',id,user:u,payload,createdAtMs:now});
       toast('Koneksi gagal. Absen disimpan lokal & akan sync otomatis.');
     }
+  }finally{
+    showLoad(false);
+    clockInInFlight=false;
+    render();
   }
-  showLoad(false);
-  render();
 }
 async function logAudit(action,detail={}){try{await addDoc(collection(db,'audit_logs'),{action,detail,user:state.user?.username||'',name:state.user?.name||'',createdAt:serverTimestamp(),createdAtMs:Date.now()})}catch(e){console.warn('audit skipped',e?.code||e)}}
 async function login(){

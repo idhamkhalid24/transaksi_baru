@@ -61,6 +61,7 @@ const DEFAULT_BONUS={transactionBonusRate:.015,closingBonusPerMinute:100};
 const LIMITS={tx:400,att:400,manual:250,closings:120};
 const state={user:null,page:'home',pos:null,busy:false,lastSyncMs:0,syncing:false,syncError:'',data:{tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}}};
 let clockInInFlight=false;
+let deviceSessionTimer=null;
 const $=id=>document.getElementById(id), page=$('page');
 
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
@@ -117,6 +118,45 @@ async function verifyDeviceLockForLogin(userData,username){
     console.error('device lock failed',e);
     return {ok:false,msg:isPermissionError(e)?'Akses Firebase menolak kunci perangkat. Hubungi admin.':'Gagal mengunci perangkat. Pastikan internet aktif.'};
   }
+}
+
+function clearSessionAndRender(msg){
+  try{localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION)}catch(e){}
+  stopDeviceSessionWatch();
+  state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}};
+  if(msg)toast(msg);
+  renderLogin();
+}
+function isDeviceSessionInvalid(fresh){
+  if(!fresh||isDailyUser(fresh))return '';
+  const serverReset=Number(fresh.deviceResetAtMs||0), localReset=Number(state.user?.deviceResetAtMs||0);
+  if(serverReset&&serverReset>localReset)return 'Device akun ini sudah direset admin. Silakan login ulang.';
+  const serverDeviceId=String(fresh.deviceId||'').trim(), localDeviceId=getDeviceId();
+  if(serverDeviceId&&serverDeviceId!==localDeviceId)return 'Akun ini sudah pindah ke perangkat lain. Silakan hubungi admin.';
+  return '';
+}
+async function validateCurrentDeviceSession({silent=true}={}){
+  if(!state.user||isDailyUser(state.user))return true;
+  try{
+    const u=key(state.user.username), snap=await getDocFromServer(doc(db,'users',u));
+    if(!snap.exists()){clearSessionAndRender('Akun sudah tidak valid');return false}
+    const raw=snap.data()||{}, fresh={id:snap.id,username:raw.username||snap.id,...raw};
+    if(isAdmin(fresh)||fresh.active===false||deleted(fresh)){clearSessionAndRender('Akun sudah nonaktif / tidak valid');return false}
+    const reason=isDeviceSessionInvalid(fresh);
+    if(reason){clearSessionAndRender(reason);return false}
+    return true;
+  }catch(e){
+    if(!silent)console.warn('device session check skipped',e?.code||e?.message||e);
+    return true;
+  }
+}
+function startDeviceSessionWatch(){
+  stopDeviceSessionWatch();
+  if(!state.user||isDailyUser(state.user))return;
+  deviceSessionTimer=setInterval(()=>validateCurrentDeviceSession({silent:true}),15000);
+}
+function stopDeviceSessionWatch(){
+  if(deviceSessionTimer){clearInterval(deviceSessionTimer);deviceSessionTimer=null;}
 }
 function rp(v){return Number(v||0).toLocaleString('id-ID')}
 function parts(d=new Date()){return Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(d).map(p=>[p.type,p.value]))}
@@ -331,8 +371,10 @@ async function loadStaffData(opts={}){
     if(userSnap.exists()){
       const rawUser=userSnap.data()||{}, fresh={id:userSnap.id,username:rawUser.username||userSnap.id,...rawUser};
       if(isAdmin(fresh)||fresh.active===false||deleted(fresh)){
-        localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION);state.user=null;toast('Akun sudah nonaktif / tidak valid');renderLogin();return;
+        clearSessionAndRender('Akun sudah nonaktif / tidak valid');return;
       }
+      const deviceInvalidReason=isDeviceSessionInvalid(fresh);
+      if(deviceInvalidReason){clearSessionAndRender(deviceInvalidReason);return;}
       state.user={
         username:key(fresh.username||u),
         name:fresh.name||u,
@@ -343,15 +385,18 @@ async function loadStaffData(opts={}){
         closingBonusPerMinute:isDailyUser(fresh)?0:(hasBonusValue(fresh.closingBonusPerMinute)?Number(fresh.closingBonusPerMinute):null),
         dailyBonusRate:Number(fresh.dailyBonusRate||0),
         dailyBonusPercent:Number(fresh.dailyBonusPercent||0),
-        active:fresh.active!==false
+        active:fresh.active!==false,
+        deviceId:isDailyUser(fresh)?'':String(fresh.deviceId||state.user.deviceId||''),
+        deviceResetAtMs:Number(fresh.deviceResetAtMs||state.user.deviceResetAtMs||0)
       };
-      const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true};
+      const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId,deviceResetAtMs:state.user.deviceResetAtMs};
       localStorage.setItem(SESSION,JSON.stringify(saved));
       localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
     }
     state.lastSyncMs=Date.now();
     state.syncError='';
     applyPendingToState();
+    startDeviceSessionWatch();
   }catch(e){
     console.error(e);
     state.syncError='Gagal refresh data';
@@ -734,8 +779,8 @@ async function login(){
     if(String(data.pin||'')!==p)throw new Error('PIN salah');
     const lock=await verifyDeviceLockForLogin(data,u);
     if(!lock.ok)throw new Error(lock.msg);
-    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false,deviceId:lock.deviceId};
-    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId};
+    state.user={username:key(data.username||u),name:data.name||u,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false,deviceId:lock.deviceId,deviceResetAtMs:Number(data.deviceResetAtMs||0)};
+    const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId,deviceResetAtMs:state.user.deviceResetAtMs};
     localStorage.setItem(SESSION,JSON.stringify(saved));
     localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
     showLoad(false);
@@ -763,6 +808,12 @@ async function boot(){
       const rawData=snap.data()||{};
       const data={id:snap.id,username:rawData.username||snap.id,...rawData};
       if(!isAdmin(data)&&data.active!==false&&!deleted(data)&&String(data.pin||'')===pin){
+        if(!isDailyUser(data)&&Number(data.deviceResetAtMs||0)>Number(s.deviceResetAtMs||0)){
+          localStorage.removeItem(SESSION);
+          localStorage.removeItem(LEGACY_SESSION);
+          toast('Device akun ini sudah direset admin. Silakan login ulang.');
+          break;
+        }
         const lock=await verifyDeviceLockForLogin(data,username);
         if(!lock.ok){
           localStorage.removeItem(SESSION);
@@ -770,8 +821,8 @@ async function boot(){
           toast(lock.msg);
           break;
         }
-        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false,deviceId:lock.deviceId};
-        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId};
+        state.user={username:key(data.username||username),name:data.name||username,pin:String(data.pin||''),role:data.role||'staff',transactionBonusRate:hasBonusValue(data.transactionBonusRate)?Number(data.transactionBonusRate):null,transactionBonusPercent:hasBonusValue(data.transactionBonusPercent)?Number(data.transactionBonusPercent):null,closingBonusPerMinute:isDailyUser(data)?0:(hasBonusValue(data.closingBonusPerMinute)?Number(data.closingBonusPerMinute):null),dailyBonusRate:Number(data.dailyBonusRate||0),dailyBonusPercent:Number(data.dailyBonusPercent||0),active:data.active!==false,deviceId:lock.deviceId,deviceResetAtMs:Number(data.deviceResetAtMs||0)};
+        const saved={username:state.user.username,name:state.user.name,pin:state.user.pin,role:state.user.role,transactionBonusRate:state.user.transactionBonusRate,transactionBonusPercent:state.user.transactionBonusPercent,closingBonusPerMinute:isDailyUser(state.user)?0:state.user.closingBonusPerMinute,dailyBonusRate:state.user.dailyBonusRate,dailyBonusPercent:state.user.dailyBonusPercent,active:true,deviceId:state.user.deviceId,deviceResetAtMs:state.user.deviceResetAtMs};
         localStorage.setItem(SESSION,JSON.stringify(saved));
         localStorage.setItem(LEGACY_SESSION,JSON.stringify({username:state.user.username,pin:state.user.pin}));
         await loadStaffData();
@@ -783,7 +834,7 @@ async function boot(){
   localStorage.removeItem(LEGACY_SESSION);
   renderLogin();
 }
-function logout(){localStorage.removeItem(SESSION);localStorage.removeItem(LEGACY_SESSION);state.user=null;state.pos=null;state.syncError='';state.lastSyncMs=0;state.data={tx:[],att:[],closings:[],manual:[],bonus:{...DEFAULT_BONUS}};renderLogin()}
+function logout(){clearSessionAndRender('')}
 function go(p){state.page=p;render()}
 async function refresh(){const changed=await checkDateChange();if(!changed){await flushPending();await loadStaffData({skipFlush:true})}toast('Data diperbarui')}
 

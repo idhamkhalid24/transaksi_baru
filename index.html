@@ -405,8 +405,8 @@ function staffDailyNoteCard(){
   if(!state.user)return '';
   const data=staffDailyHomeNoteData();
   if(!data.enabled||!data.note)return '';
-  const updated=data.updatedAtMs?`Update ${dateID(todayKey(new Date(data.updatedAtMs)))}`:'Catatan dari admin';
-  const by=data.updatedAtMs?' · power ranger':'';
+  const updated=data.updatedAtMs?`Update ${dateID(todayKey(new Date(data.updatedAtMs)))} · ${timeID(data.updatedAtMs)}`:'Catatan dari admin';
+  const by=data.updatedAtMs?' · Pesan dari Markas':'';
   return `<div class="card staff-home-note-card"><div class="staff-home-note-main"><span class="staff-home-note-ico">📌</span><div style="min-width:0;flex:1"><div class="staff-home-note-title">PENTING</div><div class="staff-home-note-text">${esc(data.note)}</div><div class="staff-home-note-meta">${esc(updated+by)}</div></div></div></div>`;
 }
 function headerGuideItems(){

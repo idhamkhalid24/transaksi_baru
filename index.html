@@ -567,10 +567,10 @@ function hasAttendOn(dateKey){const u=key(state.user?.username),d=String(dateKey
 function rate(){return userTransactionBonusRate()}
 function manualBonusRowsForDate(dateKey=todayKey()){
   const d=String(dateKey||todayKey()).slice(0,10);
-  return sortDesc((state.data.manual||[]).filter(b=>!deleted(b)&&manualBonusDate(b)===d&&Number(b.amount||0)>0));
+  return sortDesc((state.data.manual||[]).filter(b=>!deleted(b)&&manualBonusDate(b)===d&&Number(b.amount||0)!==0));
 }
 function manualBonusToday(){return manualBonusRowsForDate(todayKey()).reduce((sum,b)=>sum+Number(b.amount||0),0)}
-function manualBonus(){const m=monthKey();return (state.data.manual||[]).filter(b=>!deleted(b)&&manualBonusDate(b).slice(0,7)===m).reduce((sum,b)=>sum+Number(b.amount||0),0)}
+function manualBonus(){if(isDaily())return 0;const m=monthKey();return (state.data.manual||[]).filter(b=>!deleted(b)&&manualBonusDate(b).slice(0,7)===m).reduce((sum,b)=>sum+Number(b.amount||0),0)}
 function activeClosings(){const m=monthKey();return state.data.closings.filter(c=>c&&c.closed===true&&c.canceled!==true&&!deleted(c)&&String(c.monthKey||c.dateKey||'').startsWith(m))}
 function closingScope(c){return String(c?.scope||(c?.user?'user':'global')).toLowerCase()}
 function closingBonusValue(c){

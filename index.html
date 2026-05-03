@@ -191,6 +191,37 @@
       transform: scale(.98);
     }
 
+    .download-link-box {
+      margin-top: 10px;
+      padding: 10px 11px;
+      border-radius: 14px;
+      background: rgba(34,197,94,.10);
+      border: 1px solid rgba(34,197,94,.24);
+      color: #bbf7d0;
+      font-size: 11.5px;
+      line-height: 1.45;
+      font-weight: 750;
+      word-break: break-all;
+      text-align: left;
+    }
+
+    .copy-btn {
+      width: 100%;
+      min-height: 42px;
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .copy-btn:active {
+      transform: scale(.98);
+    }
+
     .foot {
       margin-top: 14px;
       color: rgba(203,213,225,.8);
@@ -226,13 +257,22 @@
 
         <div class="steps">
           <div class="steps-title">Yang harus dilakukan</div>
-          <p>1. Hubungi admin toko.</p>
-          <p>2. Minta link aplikasi versi terbaru.</p>
-          <p>3. Install aplikasi baru, lalu login kembali.</p>
+          <p>1. Tekan tombol download di bawah.</p>
+          <p>2. Install aplikasi versi terbaru.</p>
+          <p>3. Hapus aplikasi lama kalau masih muncul pesan ini.</p>
         </div>
 
-        <button class="admin-btn" onclick="alert('Silakan hubungi admin untuk mendapatkan aplikasi terbaru.')">
-          Hubungi Admin untuk Update
+        <a class="admin-btn" href="https://github.com/idhamkhalid24/trx_rocky_update/releases/latest/download/trx_rocky.apk" target="_blank" rel="noopener noreferrer">
+          ⬇️ Download Update APK
+        </a>
+
+        <div class="download-link-box">
+          Link update:<br />
+          https://github.com/idhamkhalid24/trx_rocky_update/releases/latest/download/trx_rocky.apk
+        </div>
+
+        <button class="copy-btn" type="button" onclick="copyUpdateLink()">
+          Salin Link Update
         </button>
 
         <div class="foot">
@@ -241,5 +281,32 @@
       </div>
     </section>
   </main>
+
+  <script>
+    const updateUrl = 'https://github.com/idhamkhalid24/trx_rocky_update/releases/latest/download/trx_rocky.apk';
+
+    function copyUpdateLink() {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(updateUrl)
+          .then(() => alert('Link update berhasil disalin.'))
+          .catch(() => fallbackCopy());
+      } else {
+        fallbackCopy();
+      }
+    }
+
+    function fallbackCopy() {
+      const input = document.createElement('textarea');
+      input.value = updateUrl;
+      input.setAttribute('readonly', '');
+      input.style.position = 'fixed';
+      input.style.left = '-9999px';
+      document.body.appendChild(input);
+      input.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(input);
+      alert('Link update berhasil disalin.');
+    }
+  </script>
 </body>
 </html>
